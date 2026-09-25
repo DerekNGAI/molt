@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/_lib.sh"
+
+if should_remote npm "$@"; then
+  exec "$(worker_bin)" run npm "$@"
+fi
+REAL="$(real_bin npm)" || { echo "npm not found on Mac" >&2; exit 127; }
+exec "$REAL" "$@"

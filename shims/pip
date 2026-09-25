@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/_lib.sh"
+
+if should_remote pip "$@"; then
+  exec "$(worker_bin)" run pip "$@"
+fi
+REAL="$(real_bin pip)" || { echo "pip not found on Mac" >&2; exit 127; }
+exec "$REAL" "$@"

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/_lib.sh"
+
+if should_remote make "$@"; then
+  exec "$(worker_bin)" run make "$@"
+fi
+REAL="$(real_bin make)" || { echo "make not found on Mac" >&2; exit 127; }
+exec "$REAL" "$@"

@@ -1,0 +1,19 @@
+# Copy to ~/.worker/config and edit.
+# Sourced by worker and shims. Do not put secrets in this file.
+
+WORKER_HOST=oci-dev
+WORKER_ROOT="$HOME/src"
+WORKER_REMOTE_ROOT='$HOME/worker/projects'       # expanded on the VM
+WORKER_REMOTE_META_ROOT='$HOME/worker/meta'      # expanded on the VM
+
+# Each project gets a deterministic OpenCode port in this range on the VM.
+WORKER_OPENCODE_BASE_PORT=4100
+
+# File containing only the OpenCode server password (chmod 600).
+WORKER_OPENCODE_PASSWORD_FILE="$HOME/.worker/opencode.password"
+
+# Ports we never try to forward from the VM.
+WORKER_PORT_DENY='22 53 111 631'
+
+# Poll for new ports until the attached remote command exits.
+WORKER_PORT_POLL=1

@@ -1,0 +1,966 @@
+#!/usr/bin/env bash
+# worker — local shell, remote project environments.
+set -euo pipefail
+
+WORKER_HOME="${WORKER_HOME:-$HOME/.worker}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_FILE="$WORKER_HOME/config"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+elif [[ -f "$SCRIPT_DIR/../config.example" ]]; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/../config.example"
+fi
+
+WORKER_HOST="${WORKER_HOST:-oci-dev}"
+WORKER_ROOT="${WORKER_ROOT:-$HOME/src}"
+WORKER_REMOTE_ROOT="${WORKER_REMOTE_ROOT:-\$HOME/worker/projects}"
+WORKER_REMOTE_META_ROOT="${WORKER_REMOTE_META_ROOT:-\$HOME/worker/meta}"
+WORKER_OPENCODE_PASSWORD_FILE="${WORKER_OPENCODE_PASSWORD_FILE:-$WORKER_HOME/opencode.password}"
+WORKER_OPENCODE_BASE_PORT="${WORKER_OPENCODE_BASE_PORT:-4100}"
+WORKER_PORT_DENY="${WORKER_PORT_DENY:-22 53 111 631}"
+WORKER_PORT_POLL="${WORKER_PORT_POLL:-1}"
+WORKER_PROJECTS_HOME="${WORKER_PROJECTS_HOME:-$WORKER_HOME/projects}"
+
+log() { printf 'worker: %s\n' "$*" >&2; }
+die() { log "$*"; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing $1"; }
+
+quote_remote() {
+  local out="" arg
+  for arg in "$@"; do
+    out="${out:+$out }$(printf '%q' "$arg")"
+  done
+  printf '%s' "$out"
+}
+
+read_value() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  IFS= read -r value <"$file" || true
+  printf '%s\n' "${value:-}"
+}
+
+write_value() {
+  local file="$1" value="$2"
+  mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$value" >"$file"
+}
+
+canonical_path() {
+  local path="$1"
+  (cd "$path" 2>/dev/null && pwd -P) || die "directory not found: $path"
+}
+
+repo_root() {
+  local path="${1:-.}"
+  path="$(canonical_path "$path")"
+  git -C "$path" rev-parse --show-toplevel 2>/dev/null || die "not a Git repository: $path"
+}
+
+project_id_for_path() {
+  local path digest
+  path="$(repo_root "$1")"
+  if command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$path" | shasum -a 256 | cut -c1-12)"
+  else
+    digest="$(printf '%s' "$path" | sha256sum | cut -c1-12)"
+  fi
+  printf '%s\n' "$digest"
+}
+
+project_state_dir() {
+  printf '%s/%s\n' "$WORKER_PROJECTS_HOME" "$(project_id_for_path "$1")"
+}
+
+detect_runtime() {
+  local path="$1"
+  if [[ -f "$path/package.json" ]]; then
+    printf 'node\n'
+  elif [[ -f "$path/Cargo.toml" ]]; then
+    printf 'rust\n'
+  elif [[ -f "$path/go.mod" ]]; then
+    printf 'go\n'
+  elif [[ -f "$path/pyproject.toml" || -f "$path/requirements.txt" || -f "$path/setup.py" ]]; then
+    printf 'python\n'
+  else
+    printf 'generic\n'
+  fi
+}
+
+detect_package_manager() {
+  local path="$1"
+  if [[ -f "$path/pnpm-lock.yaml" ]]; then
+    printf 'pnpm\n'
+  elif [[ -f "$path/yarn.lock" ]]; then
+    printf 'yarn\n'
+  elif [[ -f "$path/bun.lockb" || -f "$path/bun.lock" ]]; then
+    printf 'bun\n'
+  elif [[ -f "$path/package-lock.json" ]]; then
+    printf 'npm\n'
+  else
+    printf '%s\n' ""
+  fi
+}
+
+manifest_ports() {
+  local path="$1" manifest="$path/.worker.yml"
+  [[ -f "$manifest" ]] || return 0
+  awk '
+    /^[[:space:]]*ports:[[:space:]]*$/ { in_ports = 1; next }
+    /^[^[:space:]-]/ { in_ports = 0 }
+    in_ports && /^[[:space:]]*-[[:space:]]*[0-9]+[[:space:]]*$/ {
+      gsub(/[^0-9]/, "")
+      print
+    }
+  ' "$manifest"
+}
+
+load_project() {
+  local path="${1:-.}" state
+  path="$(repo_root "$path")"
+  state="$(project_state_dir "$path")"
+  [[ -f "$state/path" ]] || return 1
+
+  PROJECT_STATE="$state"
+  PROJECT_ID="$(basename "$state")"
+  PROJECT_PATH="$(read_value "$state/path")"
+  PROJECT_NAME="$(read_value "$state/name")"
+  PROJECT_RUNTIME="$(read_value "$state/runtime")"
+  PROJECT_PACKAGE_MANAGER="$(read_value "$state/package_manager")"
+  PROJECT_REMOTE_PATH="$(read_value "$state/remote_path")"
+  PROJECT_REMOTE_META="$(read_value "$state/remote_meta")"
+  PROJECT_REMOTE_OPENCODE_CONFIG="$(read_value "$state/remote_opencode_config" 2>/dev/null || printf '%s' '')"
+  PROJECT_CONTAINER="$(read_value "$state/container")"
+  PROJECT_IMAGE="$(read_value "$state/image")"
+  PROJECT_SYNC="$(read_value "$state/sync")"
+  PROJECT_OPENCODE_PORT="$(read_value "$state/opencode_port")"
+  PROJECT_ACTIVE="$(read_value "$state/active")"
+  return 0
+}
+
+save_project() {
+  mkdir -p "$PROJECT_STATE"
+  write_value "$PROJECT_STATE/path" "$PROJECT_PATH"
+  write_value "$PROJECT_STATE/name" "$PROJECT_NAME"
+  write_value "$PROJECT_STATE/runtime" "$PROJECT_RUNTIME"
+  write_value "$PROJECT_STATE/package_manager" "$PROJECT_PACKAGE_MANAGER"
+  write_value "$PROJECT_STATE/remote_path" "$PROJECT_REMOTE_PATH"
+  write_value "$PROJECT_STATE/remote_meta" "$PROJECT_REMOTE_META"
+  write_value "$PROJECT_STATE/remote_opencode_config" "$PROJECT_REMOTE_OPENCODE_CONFIG"
+  write_value "$PROJECT_STATE/container" "$PROJECT_CONTAINER"
+  write_value "$PROJECT_STATE/image" "$PROJECT_IMAGE"
+  write_value "$PROJECT_STATE/sync" "$PROJECT_SYNC"
+  write_value "$PROJECT_STATE/opencode_port" "$PROJECT_OPENCODE_PORT"
+  write_value "$PROJECT_STATE/active" "$PROJECT_ACTIVE"
+  : >"$PROJECT_STATE/ports"
+  manifest_ports "$PROJECT_PATH" >>"$PROJECT_STATE/ports" || true
+}
+
+register_project() {
+  local path="$1" id state
+  path="$(repo_root "$path")"
+  id="$(project_id_for_path "$path")"
+  state="$(project_state_dir "$path")"
+  mkdir -p "$state"
+
+  PROJECT_STATE="$state"
+  PROJECT_ID="$id"
+  PROJECT_PATH="$path"
+  PROJECT_NAME="$(basename "$path")"
+  PROJECT_RUNTIME="$(detect_runtime "$path")"
+  PROJECT_PACKAGE_MANAGER="$(detect_package_manager "$path")"
+  PROJECT_REMOTE_PATH=""
+  PROJECT_REMOTE_META=""
+  PROJECT_REMOTE_OPENCODE_CONFIG=""
+  PROJECT_CONTAINER="worker-$id"
+  PROJECT_IMAGE="worker-env-$id:latest"
+  PROJECT_SYNC="worker-$id"
+  PROJECT_OPENCODE_PORT="$((WORKER_OPENCODE_BASE_PORT + (16#${id:0:4} % 500)))"
+  PROJECT_ACTIVE="$(read_value "$state/active" 2>/dev/null || printf '0')"
+  save_project
+}
+
+find_project_for_path() {
+  local path="${1:-.}" state project_path
+  path="$(canonical_path "$path")"
+  for state in "$WORKER_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    project_path="$(read_value "$state")"
+    case "$path" in
+      "$project_path"|"$project_path"/*)
+        printf '%s\n' "$(dirname "$state")"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+project_active_for_path() {
+  local state
+  state="$(find_project_for_path "${1:-.}")" || return 1
+  [[ "$(read_value "$state/active")" == 1 ]]
+}
+
+remote_home() {
+  ssh_up
+  ssh "$WORKER_HOST" 'printf %s "$HOME"'
+}
+
+expand_remote_path() {
+  local path="$1" home="$2"
+  case "$path" in
+    '$HOME'/*) printf '%s/%s\n' "$home" "${path#\$HOME/}" ;;
+    '$HOME') printf '%s\n' "$home" ;;
+    '~'/*) printf '%s/%s\n' "$home" "${path#~/}" ;;
+    '~') printf '%s\n' "$home" ;;
+    /*) printf '%s\n' "$path" ;;
+    *) printf '%s/%s\n' "$home" "$path" ;;
+  esac
+}
+
+set_remote_paths() {
+  local home="$1" root meta
+  root="$(expand_remote_path "$WORKER_REMOTE_ROOT" "$home")"
+  meta="$(expand_remote_path "$WORKER_REMOTE_META_ROOT" "$home")"
+  PROJECT_REMOTE_PATH="$root/$PROJECT_ID"
+  PROJECT_REMOTE_META="$meta/$PROJECT_ID"
+  PROJECT_REMOTE_OPENCODE_CONFIG="$home/.config/opencode"
+  save_project
+}
+
+ssh_ok() { ssh -O check "$WORKER_HOST" >/dev/null 2>&1; }
+
+ssh_up() {
+  need ssh
+  if ssh_ok; then return 0; fi
+  ssh -fN "$WORKER_HOST" || die "ssh $WORKER_HOST failed"
+}
+
+ssh_down() {
+  ssh -O exit "$WORKER_HOST" >/dev/null 2>&1 || true
+}
+
+remote_run() {
+  ssh "$WORKER_HOST" "$1"
+}
+
+remote_mkdir() {
+  remote_run "mkdir -p -- $(quote_remote "$1")"
+}
+
+upload_file() {
+  local source="$1" destination="$2"
+  remote_mkdir "$(dirname "$destination")"
+  ssh "$WORKER_HOST" "cat > $(quote_remote "$destination")" <"$source"
+}
+
+cmd_setup() {
+  local setup_output
+  need ssh
+  ssh_up
+  log "checking VM $WORKER_HOST"
+  setup_output="$(ssh "$WORKER_HOST" 'bash -s' <<'REMOTE_SETUP'
+set -eu
+
+reconnect=0
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+elif command -v sudo >/dev/null 2>&1; then
+  SUDO=sudo
+else
+  echo "worker: VM user needs sudo" >&2
+  exit 1
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    $SUDO apt-get update
+    DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y \
+      ca-certificates curl git iproute2 procps docker.io
+    reconnect=1
+  else
+    echo "worker: automatic setup currently supports Ubuntu/Debian VMs" >&2
+    exit 1
+  fi
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  $SUDO systemctl enable --now docker
+fi
+
+if ! id -nG "$USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+  $SUDO usermod -aG docker "$USER" 2>/dev/null || true
+  reconnect=1
+fi
+mkdir -p "$HOME/worker/projects" "$HOME/worker/meta" "$HOME/.worker"
+mkdir -p "$HOME/.config/opencode"
+$SUDO docker info >/dev/null
+printf 'WORKER_RECONNECT=%s\n' "$reconnect"
+REMOTE_SETUP
+  )"
+  if [[ "$setup_output" == *WORKER_RECONNECT=1* ]]; then
+    ssh_down
+    ssh_up
+  fi
+  remote_run "docker info >/dev/null" || die "Docker is not available to $WORKER_HOST after setup"
+  if [[ "$setup_output" == *WORKER_RECONNECT=1* ]]; then
+    restore_forwards
+  fi
+  log "VM ready: Docker and worker directories"
+}
+
+cmd_inspect() {
+  local path runtime package_manager
+  path="$(repo_root "${1:-.}")"
+  runtime="$(detect_runtime "$path")"
+  package_manager="$(detect_package_manager "$path")"
+  printf 'repository: %s\n' "$path"
+  printf 'runtime: %s\n' "$runtime"
+  if [[ -n "$package_manager" ]]; then
+    printf 'package manager: %s\n' "$package_manager"
+  else
+    printf 'package manager: none\n'
+  fi
+  if [[ -f "$path/devenv.nix" ]]; then
+    printf 'devenv: present\n'
+  else
+    printf 'devenv: missing\n'
+  fi
+  if [[ -f "$path/.worker.yml" ]]; then
+    printf 'worker manifest: present\n'
+  else
+    printf 'worker manifest: defaults\n'
+  fi
+}
+
+cmd_generate_env() {
+  local path runtime package_manager
+  path="$(repo_root "${1:-.}")"
+  if [[ -f "$path/devenv.nix" ]]; then
+    log "devenv.nix already exists in $path"
+    return 0
+  fi
+
+  runtime="$(detect_runtime "$path")"
+  package_manager="$(detect_package_manager "$path")"
+  case "$runtime" in
+    node)
+      {
+        printf '%s\n' '{ pkgs, ... }:'
+        printf '%s\n' '{'
+        case "$package_manager" in
+          pnpm) printf '%s\n' '  packages = [ pkgs.git pkgs.nodejs pkgs.pnpm ];' ;;
+          yarn) printf '%s\n' '  packages = [ pkgs.git pkgs.nodejs pkgs.yarn ];' ;;
+          bun) printf '%s\n' '  packages = [ pkgs.git pkgs.bun ];' ;;
+          *) printf '%s\n' '  packages = [ pkgs.git pkgs.nodejs ];' ;;
+        esac
+        printf '%s\n' '  languages.javascript.enable = true;'
+        printf '%s\n' '  languages.javascript.package = pkgs.nodejs;'
+        printf '%s\n' '}'
+      } >"$path/devenv.nix"
+      ;;
+    rust)
+      {
+        printf '%s\n' '{ pkgs, ... }:'
+        printf '%s\n' '{'
+        printf '%s\n' '  packages = [ pkgs.git ];'
+        printf '%s\n' '  languages.rust.enable = true;'
+        printf '%s\n' '  languages.rust.channel = "stable";'
+        printf '%s\n' '}'
+      } >"$path/devenv.nix"
+      ;;
+    go)
+      {
+        printf '%s\n' '{ pkgs, ... }:'
+        printf '%s\n' '{'
+        printf '%s\n' '  packages = [ pkgs.git ];'
+        printf '%s\n' '  languages.go.enable = true;'
+        printf '%s\n' '}'
+      } >"$path/devenv.nix"
+      ;;
+    python)
+      {
+        printf '%s\n' '{ pkgs, ... }:'
+        printf '%s\n' '{'
+        printf '%s\n' '  packages = [ pkgs.git ];'
+        printf '%s\n' '  languages.python.enable = true;'
+        printf '%s\n' '}'
+      } >"$path/devenv.nix"
+      ;;
+    *)
+      {
+        printf '%s\n' '{ pkgs, ... }:'
+        printf '%s\n' '{'
+        printf '%s\n' '  packages = [ pkgs.git ];'
+        printf '%s\n' '}'
+      } >"$path/devenv.nix"
+      ;;
+  esac
+  log "generated $path/devenv.nix"
+}
+
+scan_repositories() {
+  local root="$1" git_dir repo
+  root="$(canonical_path "$root")"
+  if git -C "$root" rev-parse --show-toplevel >/dev/null 2>&1; then
+    git -C "$root" rev-parse --show-toplevel
+    return 0
+  fi
+  find "$root" \
+    \( -path '*/node_modules' -o -path '*/.devenv' -o -path '*/target' -o -path '*/.venv' \) -prune \
+    -o \( -type d -name .git -o -type f -name .git \) -print 2>/dev/null | while IFS= read -r git_dir; do
+      repo="${git_dir%/.git}"
+      git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true
+    done | sort -u
+}
+
+cmd_scan() {
+  local root="${1:-$WORKER_ROOT}"
+  scan_repositories "$root"
+}
+
+cmd_register() {
+  local path="$(repo_root "${1:-.}")"
+  register_project "$path"
+  log "registered $PROJECT_NAME ($PROJECT_ID)"
+  printf '%s\n' "$PROJECT_STATE"
+}
+
+dockerfile_for_project() {
+  local file="$1"
+  {
+    printf '%s\n' 'FROM ghcr.io/cachix/devenv/devcontainer:latest'
+    printf '%s\n' 'USER root'
+    printf '%s\n' 'ENV PATH="/root/.opencode/bin:/root/.nix-profile/bin:/root/.local/bin:${PATH}"'
+    printf '%s\n' 'RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'
+    printf '%s\n' 'WORKDIR /workspace'
+    printf '%s\n' 'ENTRYPOINT []'
+    printf '%s\n' 'CMD ["sleep", "infinity"]'
+  } >"$file"
+}
+
+start_sync() {
+  need mutagen
+  mutagen daemon start >/dev/null 2>&1 || true
+  if ! mutagen sync create \
+    --name "$PROJECT_SYNC" \
+    --mode one-way-replica \
+    --ignore-vcs \
+    --ignore node_modules \
+    --ignore .devenv \
+    --ignore .next \
+    --ignore dist \
+    --ignore build \
+    --ignore target \
+    --ignore .venv \
+    --ignore venv \
+    --ignore __pycache__ \
+    "$PROJECT_PATH" "$WORKER_HOST:$PROJECT_REMOTE_PATH" >/dev/null 2>&1; then
+    mutagen sync resume "$PROJECT_SYNC" >/dev/null 2>&1 || die "could not start Mutagen session $PROJECT_SYNC"
+  fi
+  mutagen sync flush "$PROJECT_SYNC" >/dev/null 2>&1 || true
+}
+
+ensure_container() {
+  local running docker_flags
+  running="$(remote_run "docker inspect -f '{{.State.Running}}' $(quote_remote "$PROJECT_CONTAINER") 2>/dev/null || true")"
+  if [[ "$running" == true ]]; then return 0; fi
+  remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER") >/dev/null 2>&1 || true"
+  docker_flags="--mount type=bind,src=$(quote_remote "$PROJECT_REMOTE_PATH"),dst=/workspace"
+  docker_flags="$docker_flags --mount type=bind,src=$(quote_remote "$PROJECT_REMOTE_META"),dst=/worker-meta"
+  docker_flags="$docker_flags --mount type=bind,src=$(quote_remote "$PROJECT_REMOTE_OPENCODE_CONFIG"),dst=/root/.config/opencode"
+  docker_flags="$docker_flags --mount type=volume,src=$(quote_remote "worker-cache-$PROJECT_ID"),dst=/root/.cache"
+  remote_run "docker run -d --name $(quote_remote "$PROJECT_CONTAINER") --network host --workdir /workspace $docker_flags $(quote_remote "$PROJECT_IMAGE") sleep infinity >/dev/null"
+}
+
+ensure_project_container() {
+  need mutagen
+  ssh_up
+  if [[ -z "$PROJECT_REMOTE_PATH" || -z "$PROJECT_REMOTE_META" || -z "$PROJECT_REMOTE_OPENCODE_CONFIG" ]]; then
+    set_remote_paths "$(remote_home)"
+  fi
+  remote_mkdir "$PROJECT_REMOTE_PATH"
+  remote_mkdir "$PROJECT_REMOTE_META"
+  remote_mkdir "$PROJECT_REMOTE_OPENCODE_CONFIG"
+  mutagen sync resume "$PROJECT_SYNC" >/dev/null 2>&1 || true
+  ensure_container
+  forward_project_ports
+}
+
+ensure_password() {
+  mkdir -p "$WORKER_HOME"
+  if [[ ! -s "$WORKER_OPENCODE_PASSWORD_FILE" ]]; then
+    umask 077
+    if command -v openssl >/dev/null 2>&1; then
+      openssl rand -hex 24 >"$WORKER_OPENCODE_PASSWORD_FILE"
+    else
+      LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48 >"$WORKER_OPENCODE_PASSWORD_FILE"
+      printf '\n' >>"$WORKER_OPENCODE_PASSWORD_FILE"
+    fi
+  fi
+  chmod 600 "$WORKER_OPENCODE_PASSWORD_FILE"
+}
+
+sync_password() {
+  ensure_password
+  upload_file "$WORKER_OPENCODE_PASSWORD_FILE" "$PROJECT_REMOTE_META/opencode.password"
+  remote_run "chmod 600 $(quote_remote "$PROJECT_REMOTE_META/opencode.password")"
+}
+
+start_opencode_remote() {
+  local check command
+  check="docker exec $(quote_remote "$PROJECT_CONTAINER") sh -lc $(quote_remote "pgrep -f 'opencode serve.*$PROJECT_OPENCODE_PORT' >/dev/null")"
+  if remote_run "$check" >/dev/null 2>&1; then return 0; fi
+  command="export OPENCODE_SERVER_PASSWORD=\$(cat /worker-meta/opencode.password); exec devenv shell -- /root/.opencode/bin/opencode serve --hostname 0.0.0.0 --port $(quote_remote "$PROJECT_OPENCODE_PORT") > /worker-meta/opencode.log 2>&1"
+  remote_run "docker exec -d --workdir /workspace $(quote_remote "$PROJECT_CONTAINER") sh -lc $(quote_remote "$command") >/dev/null"
+}
+
+deny_port() {
+  local port="$1" denied
+  for denied in $WORKER_PORT_DENY; do
+    [[ "$port" == "$denied" ]] && return 0
+  done
+  return 1
+}
+
+listen_ports_remote() {
+  remote_run 'ss -lntH 2>/dev/null || netstat -lnt 2>/dev/null' | awk '{
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /:[0-9]+$/) {
+        split($i, parts, ":")
+        print parts[length(parts)]
+      }
+    }
+  }' | grep -E '^[0-9]+$' | sort -n -u
+}
+
+local_port_busy() {
+  local port="$1"
+  command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+record_forward() {
+  local port="$1"
+  mkdir -p "$PROJECT_STATE"
+  touch "$PROJECT_STATE/forwards"
+  grep -qx "$port" "$PROJECT_STATE/forwards" 2>/dev/null || printf '%s\n' "$port" >>"$PROJECT_STATE/forwards"
+}
+
+forward_port() {
+  local port="$1"
+  deny_port "$port" && return 0
+  if local_port_busy "$port"; then
+    log "localhost:$port already has a listener; skipped"
+    return 0
+  fi
+  if ssh -O forward -L "127.0.0.1:${port}:127.0.0.1:${port}" "$WORKER_HOST" >/dev/null 2>&1; then
+    record_forward "$port"
+    log "forwarded localhost:$port"
+  fi
+}
+
+cancel_project_forwards() {
+  local port
+  [[ -f "$PROJECT_STATE/forwards" ]] || return 0
+  while IFS= read -r port; do
+    [[ -n "$port" ]] || continue
+    ssh -O cancel -L "127.0.0.1:${port}:127.0.0.1:${port}" "$WORKER_HOST" >/dev/null 2>&1 || true
+  done <"$PROJECT_STATE/forwards"
+  : >"$PROJECT_STATE/forwards"
+}
+
+forward_project_ports() {
+  local port
+  forward_port "$PROJECT_OPENCODE_PORT"
+  [[ -f "$PROJECT_STATE/ports" ]] || return 0
+  while IFS= read -r port; do
+    [[ -n "$port" ]] && forward_port "$port"
+  done <"$PROJECT_STATE/ports"
+}
+
+restore_forwards() {
+  local state path
+  for state in "$WORKER_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    path="$(read_value "$state")"
+    load_project "$path" || continue
+    [[ "$PROJECT_ACTIVE" == 1 ]] || continue
+    forward_project_ports
+  done
+}
+
+cmd_start() {
+  local path="$(repo_root "${1:-.}")" dockerfile tmp
+  need mutagen
+  if [[ ! -f "$path/devenv.nix" ]]; then
+    cmd_generate_env "$path"
+  fi
+  register_project "$path"
+  cmd_setup
+  load_project "$path" || die "could not load project state"
+  set_remote_paths "$(remote_home)"
+  remote_mkdir "$PROJECT_REMOTE_PATH"
+  remote_mkdir "$PROJECT_REMOTE_META"
+  remote_mkdir "$PROJECT_REMOTE_OPENCODE_CONFIG"
+  start_sync
+
+  tmp="$(mktemp "${TMPDIR:-/tmp}/worker-dockerfile.XXXXXX")"
+  dockerfile_for_project "$tmp"
+  upload_file "$tmp" "$PROJECT_REMOTE_META/Dockerfile"
+  rm -f "$tmp"
+  remote_run "docker build --tag $(quote_remote "$PROJECT_IMAGE") --file $(quote_remote "$PROJECT_REMOTE_META/Dockerfile") $(quote_remote "$PROJECT_REMOTE_META") >/dev/null"
+  sync_password
+  ensure_container
+  start_opencode_remote
+  PROJECT_ACTIVE=1
+  save_project
+  forward_project_ports
+  log "$PROJECT_NAME is running in $WORKER_HOST ($PROJECT_CONTAINER)"
+}
+
+cmd_stop_project() {
+  local path="${1:-.}"
+  load_project "$path" || return 0
+  [[ "$PROJECT_ACTIVE" == 1 ]] || return 0
+  ssh_up
+  remote_run "docker stop $(quote_remote "$PROJECT_CONTAINER") >/dev/null 2>&1 || true"
+  mutagen sync pause "$PROJECT_SYNC" >/dev/null 2>&1 || true
+  cancel_project_forwards
+  PROJECT_ACTIVE=0
+  save_project
+  log "stopped $PROJECT_NAME"
+}
+
+cmd_down() {
+  local state
+  for state in "$WORKER_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    cmd_stop_project "$(read_value "$state")"
+  done
+  ssh_down
+  log "worker down"
+}
+
+container_path_for_pwd() {
+  local current="$1" relative
+  case "$current" in
+    "$PROJECT_PATH"/*) relative="${current#"$PROJECT_PATH"/}"; printf '/workspace/%s\n' "$relative" ;;
+    *) printf '/workspace\n' ;;
+  esac
+}
+
+watch_and_forward() {
+  local before="$1" added="$2" port
+  : >"$added"
+  while :; do
+    while IFS= read -r port; do
+      [[ -n "$port" ]] || continue
+      grep -qx "$port" "$before" 2>/dev/null && continue
+      grep -qx "$port" "$added" 2>/dev/null && continue
+      if ! deny_port "$port"; then
+        if ssh -O forward -L "127.0.0.1:${port}:127.0.0.1:${port}" "$WORKER_HOST" >/dev/null 2>&1; then
+          printf '%s\n' "$port" >>"$added"
+          log "forwarded localhost:$port"
+        fi
+      fi
+    done < <(listen_ports_remote || true)
+    sleep "$WORKER_PORT_POLL"
+  done
+}
+
+cmd_run() {
+  local current path container_path command tmp watcher rc docker_flags ssh_flags
+  [[ $# -gt 0 ]] || die "worker run <command> [args...]"
+  if [[ "${WORKER_LOCAL:-0}" == 1 ]]; then exec "$@"; fi
+  current="$(canonical_path "$(pwd)")"
+  path="$(find_project_for_path "$current")" || die "project is not registered; run worker or worker start"
+  load_project "$(read_value "$path/path")"
+  [[ "$PROJECT_ACTIVE" == 1 ]] || die "project is stopped; run worker start"
+  ensure_project_container
+  container_path="$(container_path_for_pwd "$current")"
+  command="$(quote_remote "$@")"
+  docker_flags="-i"
+  ssh_flags=()
+  if [[ -t 0 && -t 1 ]]; then
+    docker_flags="-it"
+    ssh_flags=(-t)
+  fi
+
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/worker-run.XXXXXX")"
+  listen_ports_remote >"$tmp/before" || true
+  : >"$tmp/added"
+  watch_and_forward "$tmp/before" "$tmp/added" &
+  watcher=$!
+
+  cleanup_run() {
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    if [[ -f "$tmp/added" ]]; then
+      while IFS= read -r port; do
+        [[ -n "$port" ]] && ssh -O cancel -L "127.0.0.1:${port}:127.0.0.1:${port}" "$WORKER_HOST" >/dev/null 2>&1 || true
+      done <"$tmp/added"
+    fi
+    rm -rf "$tmp"
+  }
+  trap cleanup_run EXIT INT TERM
+
+  remote_command="docker exec $docker_flags --workdir $(quote_remote "$container_path") $(quote_remote "$PROJECT_CONTAINER") devenv shell -- bash -lc $(quote_remote "$command")"
+  set +e
+  ssh "${ssh_flags[@]}" "$WORKER_HOST" "$remote_command"
+  rc=$?
+  set -e
+  exit "$rc"
+}
+
+real_binary() {
+  local name="$1" path shim="$WORKER_HOME/shims/$1"
+  if [[ -x "$HOME/.opencode/bin/$name" ]]; then
+    printf '%s\n' "$HOME/.opencode/bin/$name"
+    return 0
+  fi
+  while IFS= read -r path; do
+    [[ "$path" == "$shim" ]] && continue
+    [[ -x "$path" ]] && { printf '%s\n' "$path"; return 0; }
+  done < <(type -aP "$name" 2>/dev/null || true)
+  return 1
+}
+
+load_password() {
+  ensure_password
+  OPENCODE_SERVER_PASSWORD="$(tr -d '\n' <"$WORKER_OPENCODE_PASSWORD_FILE")"
+  export OPENCODE_SERVER_PASSWORD
+}
+
+cmd_oc() {
+  local current="$(canonical_path "$(pwd)")" real
+  load_project "$current" || die "project is not registered; run worker start"
+  [[ "$PROJECT_ACTIVE" == 1 ]] || die "project is stopped; run worker start"
+  ensure_project_container
+  sync_password
+  start_opencode_remote
+  forward_port "$PROJECT_OPENCODE_PORT"
+  real="$(real_binary opencode || true)"
+  [[ -n "$real" ]] || die "local opencode client not found; run install.sh again"
+  load_password
+  exec env OPENCODE_SERVER_PASSWORD="$OPENCODE_SERVER_PASSWORD" "$real" attach "http://127.0.0.1:$PROJECT_OPENCODE_PORT" "$@"
+}
+
+cmd_status() {
+  local state path active running
+  if ssh_ok; then printf 'worker: ssh %s connected\n' "$WORKER_HOST"; else printf 'worker: ssh %s disconnected\n' "$WORKER_HOST"; fi
+  for state in "$WORKER_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    path="$(read_value "$state")"
+    load_project "$path"
+    active="${PROJECT_ACTIVE:-0}"
+    running="unknown"
+    if [[ "$active" == 1 ]] && ssh_ok; then
+      running="$(remote_run "docker inspect -f '{{.State.Running}}' $(quote_remote "$PROJECT_CONTAINER") 2>/dev/null || printf false")"
+    fi
+    printf '%s  active=%s  container=%s  docker=%s\n' "$PROJECT_PATH" "$active" "$PROJECT_CONTAINER" "$running"
+    if [[ -f "$PROJECT_STATE/forwards" ]]; then
+      while IFS= read -r port; do [[ -n "$port" ]] && printf '  localhost:%s\n' "$port"; done <"$PROJECT_STATE/forwards"
+    fi
+  done
+}
+
+cmd_doctor() {
+  local failed=0
+  for command in git ssh; do
+    if command -v "$command" >/dev/null 2>&1; then printf 'ok   %s\n' "$command"; else printf 'miss %s\n' "$command"; failed=1; fi
+  done
+  if command -v mutagen >/dev/null 2>&1; then printf 'ok   mutagen\n'; else printf 'miss mutagen\n'; failed=1; fi
+  if ssh -o BatchMode=yes "$WORKER_HOST" 'true' >/dev/null 2>&1; then
+    if ssh_up && remote_run 'command -v docker >/dev/null && docker info >/dev/null 2>&1'; then
+      printf 'ok   %s Docker\n' "$WORKER_HOST"
+    else
+      printf 'miss %s Docker (run worker setup)\n' "$WORKER_HOST"
+      failed=1
+    fi
+  else
+    printf 'miss %s SSH (check ~/.ssh/config)\n' "$WORKER_HOST"
+    failed=1
+  fi
+  return "$failed"
+}
+
+cmd_logs() {
+  load_project "${1:-.}" || die "project is not registered"
+  ssh_up
+  remote_run "docker exec $(quote_remote "$PROJECT_CONTAINER") sh -lc 'cat /worker-meta/opencode.log 2>/dev/null || true'"
+}
+
+cmd_review_env() {
+  local path="$(repo_root "${1:-.}")"
+  git -C "$path" status --short -- devenv.nix
+  if [[ -f "$path/devenv.nix" ]]; then
+    git -C "$path" diff --no-ext-diff -- devenv.nix || true
+    if ! git -C "$path" ls-files --error-unmatch devenv.nix >/dev/null 2>&1; then
+      diff -u /dev/null "$path/devenv.nix" || true
+    fi
+  fi
+}
+
+commit_generated_env() {
+  local path="$1" answer
+  cmd_review_env "$path"
+  printf 'Stage and commit devenv.nix locally? [y/N] '
+  read -r answer
+  case "$answer" in
+    y|Y|yes|YES)
+      git -C "$path" add devenv.nix
+      git -C "$path" commit -m 'chore: add devenv environment'
+      ;;
+  esac
+}
+
+cmd_reset() {
+  local path="$(repo_root "${1:-.}")" answer
+  load_project "$path" || return 0
+  printf 'Remove the remote container, image, sync, and local worker state for %s? [y/N] ' "$PROJECT_NAME"
+  read -r answer
+  [[ "$answer" == y || "$answer" == Y ]] || return 0
+  ssh_up
+  remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER") >/dev/null 2>&1 || true"
+  remote_run "docker image rm $(quote_remote "$PROJECT_IMAGE") >/dev/null 2>&1 || true"
+  mutagen sync terminate "$PROJECT_SYNC" >/dev/null 2>&1 || true
+  cancel_project_forwards
+  rm -rf "$PROJECT_STATE"
+  log "reset $PROJECT_NAME"
+}
+
+cmd_tui() {
+  local root selection action repo answer saved_root
+  local -a repos
+  saved_root="$(read_value "$WORKER_HOME/root" 2>/dev/null || printf '%s' '')"
+  root="${1:-${saved_root:-$WORKER_ROOT}}"
+  printf 'Project root [%s]: ' "$root"
+  read -r answer
+  [[ -n "$answer" ]] && root="$answer"
+  [[ -d "$root" ]] || die "directory not found: $root"
+  write_value "$WORKER_HOME/root" "$(canonical_path "$root")"
+
+  while :; do
+    repos=()
+    while IFS= read -r repo; do repos[${#repos[@]}]="$repo"; done < <(cmd_scan "$root")
+    printf '\nWorker projects under %s\n\n' "$(canonical_path "$root")"
+    if [[ ${#repos[@]} -eq 0 ]]; then
+      printf 'No Git repositories found.\n'
+      return 0
+    fi
+    local index=0 runtime environment
+    for repo in "${repos[@]}"; do
+      index=$((index + 1))
+      runtime="$(detect_runtime "$repo")"
+      if [[ -f "$repo/devenv.nix" ]]; then environment=devenv; else environment='devenv missing'; fi
+      printf '%2d) %s [%s, %s]\n' "$index" "$repo" "$runtime" "$environment"
+    done
+    printf 'Select a repository, or q to quit: '
+    read -r selection
+    [[ "$selection" == q || "$selection" == Q ]] && return 0
+    [[ "$selection" =~ ^[0-9]+$ ]] || continue
+    (( selection >= 1 && selection <= ${#repos[@]} )) || continue
+    repo="${repos[$((selection - 1))]}"
+
+    while :; do
+      printf '\n%s\n' "$repo"
+      printf '1) start  2) stop  3) inspect  4) review/commit devenv  5) logs  6) back\n'
+      printf 'Action: '
+      read -r action
+      case "$action" in
+        1)
+          if [[ ! -f "$repo/devenv.nix" ]]; then
+            cmd_generate_env "$repo"
+            commit_generated_env "$repo"
+          fi
+          cmd_start "$repo"
+          ;;
+        2) cmd_stop_project "$repo" ;;
+        3) cmd_inspect "$repo" ;;
+        4) commit_generated_env "$repo" ;;
+        5) cmd_logs "$repo" ;;
+        6) break ;;
+      esac
+    done
+  done
+}
+
+usage() {
+  cat <<USAGE
+worker — local shell, remote project environments
+
+  worker                         open the project TUI
+  worker tui [root]              scan and manage repositories
+  worker scan [root]             print Git repositories under root
+  worker inspect [repo]          detect runtime and environment files
+  worker generate-env [repo]     create a minimal devenv.nix locally
+  worker setup                   install Docker and worker directories on VM
+  worker register [repo]         register a repository locally
+  worker start [repo]            sync, build, and start its VM container
+  worker stop [repo]             stop its VM container and sync
+  worker up                      start all registered active projects
+  worker down                    stop all active projects
+  worker status                  show SSH, project, container, and forwards
+  worker doctor                  check local and VM prerequisites
+  worker run <command> [args]    run a command in the current project
+  worker ssh [args]              open an SSH session to the VM
+  worker oc [args]               attach the local OpenCode client remotely
+  worker logs [repo]             show the remote OpenCode log
+  worker review-env [repo]       review generated devenv.nix
+  worker reset [repo]            remove remote and local project worker state
+
+  WORKER_LOCAL=1 <command>       force a command to run on the Mac
+  WORKER_REMOTE_ALL=1 <command> route every supported shim command remotely
+USAGE
+}
+
+main() {
+  local command="${1:-tui}"
+  shift || true
+  case "$command" in
+    tui) cmd_tui "$@" ;;
+    scan) cmd_scan "$@" ;;
+    inspect) cmd_inspect "$@" ;;
+    generate-env|generate) cmd_generate_env "$@" ;;
+    project-id) project_id_for_path "${1:-.}" ;;
+    project-active) project_active_for_path "${1:-.}" ;;
+    route)
+      if project_active_for_path "${1:-.}" && command_is_remote "${2:-}" "${@:3}"; then printf 'remote\n'; else printf 'local\n'; fi
+      ;;
+    setup) cmd_setup "$@" ;;
+    register) cmd_register "$@" ;;
+    start) cmd_start "$@" ;;
+    stop) cmd_stop_project "$@" ;;
+    up)
+      for state in "$WORKER_PROJECTS_HOME"/*/path; do [[ -f "$state" ]] && cmd_start "$(read_value "$state")"; done
+      ;;
+    down) cmd_down "$@" ;;
+    status) cmd_status "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    run) cmd_run "$@" ;;
+    ssh) ssh_up; exec ssh "$WORKER_HOST" "$@" ;;
+    oc|opencode) cmd_oc "$@" ;;
+    logs) cmd_logs "$@" ;;
+    review-env) cmd_review_env "$@" ;;
+    commit-env) commit_generated_env "$(repo_root "${1:-.}")" ;;
+    reset) cmd_reset "$@" ;;
+    help|-h|--help) usage ;;
+    *) die "unknown command: $command (try worker help)" ;;
+  esac
+}
+
+command_is_remote() {
+  local command="${1:-}"
+  [[ "${WORKER_LOCAL:-0}" != 1 ]] || return 1
+  [[ "${WORKER_REMOTE_ALL:-0}" == 1 ]] && return 0
+  case "$command" in
+    opencode|node|python|python3|pytest|pip|pip3|pnpm|npm|yarn|bun|cargo|rustc|go|make|cmake|devenv) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+main "$@"

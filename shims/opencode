@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$HERE/_lib.sh"
+
+if should_remote opencode; then
+  exec "$(worker_bin)" oc "$@"
+fi
+if [[ "${WORKER_LOCAL:-0}" == "1" || "${WORKER_REMOTE_ALL:-0}" != "1" ]]; then
+  REAL="$(real_bin opencode)" || { echo "opencode not found on Mac" >&2; exit 127; }
+  exec "$REAL" "$@"
+fi
+exec "$(worker_bin)" oc "$@"

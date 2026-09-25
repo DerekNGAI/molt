@@ -1,0 +1,17 @@
+# Append to ~/.ssh/config
+#
+# HostName can be a public IP or a Tailscale MagicDNS name.
+# Do not LocalForward app ports here. worker adds them on demand via
+# `ssh -O forward` on this ControlMaster connection.
+
+Host oci-dev
+  HostName REPLACE_ME
+  User ubuntu
+  IdentityFile ~/.ssh/oci_dev
+  IdentitiesOnly yes
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 12h
+  ServerAliveInterval 30
+  ServerAliveCountMax 4
+  ExitOnForwardFailure no
