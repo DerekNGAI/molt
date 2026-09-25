@@ -5,10 +5,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote opencode; then
-  exec "$(worker_bin)" oc "$@"
+  exec "$(molt_bin)" oc "$@"
 fi
-if [[ "${WORKER_LOCAL:-0}" == "1" || "${WORKER_REMOTE_ALL:-0}" != "1" ]]; then
+if [[ "${MOLT_LOCAL:-0}" == "1" || "${MOLT_REMOTE_ALL:-0}" != "1" ]]; then
   REAL="$(real_bin opencode)" || { echo "opencode not found on Mac" >&2; exit 127; }
   exec "$REAL" "$@"
 fi
-exec "$(worker_bin)" oc "$@"
+exec "$(molt_bin)" oc "$@"

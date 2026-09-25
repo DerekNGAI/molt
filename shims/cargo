@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote cargo "$@"; then
-  exec "$(worker_bin)" run cargo "$@"
+  exec "$(molt_bin)" run cargo "$@"
 fi
 REAL="$(real_bin cargo)" || { echo "cargo not found on Mac" >&2; exit 127; }
 exec "$REAL" "$@"

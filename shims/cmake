@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote cmake "$@"; then
-  exec "$(worker_bin)" run cmake "$@"
+  exec "$(molt_bin)" run cmake "$@"
 fi
 REAL="$(real_bin cmake)" || { echo "cmake not found on Mac" >&2; exit 127; }
 exec "$REAL" "$@"

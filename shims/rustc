@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote rustc "$@"; then
-  exec "$(worker_bin)" run rustc "$@"
+  exec "$(molt_bin)" run rustc "$@"
 fi
 REAL="$(real_bin rustc)" || { echo "rustc not found on Mac" >&2; exit 127; }
 exec "$REAL" "$@"

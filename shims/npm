@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote npm "$@"; then
-  exec "$(worker_bin)" run npm "$@"
+  exec "$(molt_bin)" run npm "$@"
 fi
 REAL="$(real_bin npm)" || { echo "npm not found on Mac" >&2; exit 127; }
 exec "$REAL" "$@"

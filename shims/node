@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote node "$@"; then
-  exec "$(worker_bin)" run node "$@"
+  exec "$(molt_bin)" run node "$@"
 fi
 REAL="$(real_bin node)" || { echo "node not found on Mac" >&2; exit 127; }
 exec "$REAL" "$@"

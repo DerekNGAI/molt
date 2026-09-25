@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 # Shared by command shims. Decide remote vs local.
 
-worker_bin() {
-  if command -v worker >/dev/null 2>&1; then
-    command -v worker
+molt_bin() {
+  if command -v molt >/dev/null 2>&1; then
+    command -v molt
     return
   fi
-  echo "${WORKER_HOME:-$HOME/.worker}/bin/worker"
+  echo "${MOLT_HOME:-$HOME/.molt}/bin/molt"
 }
 
 # Return 0 if this invocation should run in the active project container.
 should_remote() {
   local cmd="$1"
 
-  if [[ "${WORKER_LOCAL:-0}" == "1" ]]; then
+  if [[ "${MOLT_LOCAL:-0}" == "1" ]]; then
     return 1
   fi
-  "$(worker_bin)" project-active "$PWD" >/dev/null 2>&1 || return 1
-  [[ "${WORKER_REMOTE_ALL:-0}" == "1" ]] && return 0
+  "$(molt_bin)" project-active "$PWD" >/dev/null 2>&1 || return 1
+  [[ "${MOLT_REMOTE_ALL:-0}" == "1" ]] && return 0
 
   case "$cmd" in
     opencode|node|python|python3|pytest|pip|pip3|pnpm|npm|yarn|bun|cargo|rustc|go|make|cmake|devenv)

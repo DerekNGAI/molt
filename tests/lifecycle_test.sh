@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/worker-lifecycle.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-lifecycle.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 FAKE_BIN="$TMP/bin"
@@ -58,43 +58,43 @@ assert_contains() {
 }
 
 test_install_and_uninstall_custom_home() {
-  local worker_home="$TMP/custom-worker" worker_path
-  worker_path="$(cd "$worker_home" 2>/dev/null && pwd -P || true)"
+  local molt_home="$TMP/custom-molt" molt_path
+  molt_path="$(cd "$molt_home" 2>/dev/null && pwd -P || true)"
 
   export HOME="$TEST_HOME"
   export ZDOTDIR
-  export WORKER_HOME="$worker_home"
+  export MOLT_HOME="$molt_home"
   export TEST_BIN="$FAKE_BIN"
   export CURL_COUNT_FILE="$TMP/curl.count"
   export PATH="$FAKE_BIN:/usr/bin:/bin"
 
   bash "$ROOT/install.sh"
   [[ "$(wc -l <"$CURL_COUNT_FILE" | tr -d ' ')" == 1 ]]
-  worker_path="$(cd "$worker_home" && pwd -P)"
+  molt_path="$(cd "$molt_home" && pwd -P)"
 
-  assert_file "$worker_home/bin/worker"
-  assert_file "$worker_home/shims/pnpm"
-  assert_contains 'WORKER_OPENCODE_PASSWORD_FILE="${WORKER_OPENCODE_PASSWORD_FILE:-$WORKER_HOME/opencode.password}"' "$worker_home/config"
-  assert_contains "export WORKER_HOME=\"$worker_path\"" "$ZDOTDIR/.zshrc"
-  assert_contains "export PATH=\"$worker_path/shims:$worker_path/bin:$HOME/.opencode/bin:\$PATH\"" "$ZDOTDIR/.zshrc"
-  assert_contains 'MUTAGEN_INSTALLED=1' "$worker_home/.install-manifest"
-  assert_contains 'OPENCODE_INSTALLED=1' "$worker_home/.install-manifest"
-  assert_file "$worker_home/bin/worker-uninstall"
+  assert_file "$molt_home/bin/molt"
+  assert_file "$molt_home/shims/pnpm"
+  assert_contains 'MOLT_OPENCODE_PASSWORD_FILE="${MOLT_OPENCODE_PASSWORD_FILE:-$MOLT_HOME/opencode.password}"' "$molt_home/config"
+  assert_contains "export MOLT_HOME=\"$molt_path\"" "$ZDOTDIR/.zshrc"
+  assert_contains "export PATH=\"$molt_path/shims:$molt_path/bin:$HOME/.opencode/bin:\$PATH\"" "$ZDOTDIR/.zshrc"
+  assert_contains 'MUTAGEN_INSTALLED=1' "$molt_home/.install-manifest"
+  assert_contains 'OPENCODE_INSTALLED=1' "$molt_home/.install-manifest"
+  assert_file "$molt_home/bin/molt-uninstall"
 
-  touch "$worker_home/shims/stale"
+  touch "$molt_home/shims/stale"
   bash "$ROOT/install.sh"
   [[ "$(wc -l <"$CURL_COUNT_FILE" | tr -d ' ')" == 1 ]]
-  assert_absent "$worker_home/shims/stale"
+  assert_absent "$molt_home/shims/stale"
 
-  bash "$worker_home/bin/worker-uninstall" --yes
-  assert_absent "$worker_home"
+  bash "$molt_home/bin/molt-uninstall" --yes
+  assert_absent "$molt_home"
   assert_absent "$TEST_HOME/.opencode"
   assert_absent "$FAKE_BIN/mutagen"
   assert_absent "$ZDOTDIR/.zshrc"
 }
 
 test_uninstall_preserves_existing_zshrc() {
-  local worker_home="$TMP/preserved-worker" original_zshrc
+  local molt_home="$TMP/preserved-molt" original_zshrc
 
   printf 'export KEEP_ME=1\n\n' >"$ZDOTDIR/.zshrc"
   original_zshrc="$TMP/original.zshrc"
@@ -102,12 +102,12 @@ test_uninstall_preserves_existing_zshrc() {
 
   export HOME="$TEST_HOME"
   export ZDOTDIR
-  export WORKER_HOME="$worker_home"
+  export MOLT_HOME="$molt_home"
   export TEST_BIN="$FAKE_BIN"
   export PATH="$FAKE_BIN:/usr/bin:/bin"
 
   bash "$ROOT/install.sh"
-  bash "$worker_home/bin/worker-uninstall" --yes
+  bash "$molt_home/bin/molt-uninstall" --yes
   cmp -s "$original_zshrc" "$ZDOTDIR/.zshrc" || {
     diff -u "$original_zshrc" "$ZDOTDIR/.zshrc" || true
     exit 1
@@ -115,12 +115,12 @@ test_uninstall_preserves_existing_zshrc() {
 }
 
 test_install_fails_without_mutagen() {
-  local worker_home="$TMP/failing-worker" home="$TMP/failing-home"
+  local molt_home="$TMP/failing-molt" home="$TMP/failing-home"
 
   mkdir -p "$home"
   export HOME="$home"
   export ZDOTDIR="$TMP/failing-zsh"
-  export WORKER_HOME="$worker_home"
+  export MOLT_HOME="$molt_home"
   export PATH="/usr/bin:/bin"
 
   if bash "$ROOT/install.sh" >"$TMP/install-failure.log" 2>&1; then
@@ -132,7 +132,7 @@ test_install_fails_without_mutagen() {
 }
 
 test_reset_removes_remote_project_artifacts() {
-  local worker_home="$TMP/project-worker" repo="$TMP/repo" ssh_log="$TMP/ssh.log"
+  local molt_home="$TMP/project-molt" repo="$TMP/repo" ssh_log="$TMP/ssh.log"
   local project_id state
 
   mkdir -p "$repo"
@@ -141,20 +141,20 @@ test_reset_removes_remote_project_artifacts() {
   chmod +x "$FAKE_BIN/mutagen"
 
   export HOME="$TEST_HOME"
-  export WORKER_HOME="$worker_home"
+  export MOLT_HOME="$molt_home"
   export SSH_LOG="$ssh_log"
   export PATH="$FAKE_BIN:/usr/bin:/bin"
 
-  "$ROOT/bin/worker" register "$repo" >/dev/null
-  project_id="$("$ROOT/bin/worker" project-id "$repo")"
-  state="$worker_home/projects/$project_id"
-  printf '/remote/worker/projects/%s\n' "$project_id" >"$state/remote_path"
-  printf '/remote/worker/meta/%s\n' "$project_id" >"$state/remote_meta"
+  "$ROOT/bin/molt" register "$repo" >/dev/null
+  project_id="$("$ROOT/bin/molt" project-id "$repo")"
+  state="$molt_home/projects/$project_id"
+  printf '/remote/molt/projects/%s\n' "$project_id" >"$state/remote_path"
+  printf '/remote/molt/meta/%s\n' "$project_id" >"$state/remote_meta"
   printf '/remote/.config/opencode\n' >"$state/remote_opencode_config"
 
-  printf 'y\n' | "$ROOT/bin/worker" reset "$repo" >/dev/null
-  assert_contains "docker volume rm -f worker-cache-$project_id" "$ssh_log"
-  assert_contains "rm -rf -- /remote/worker/projects/$project_id /remote/worker/meta/$project_id" "$ssh_log"
+  printf 'y\n' | "$ROOT/bin/molt" reset "$repo" >/dev/null
+  assert_contains "docker volume rm -f molt-cache-$project_id" "$ssh_log"
+  assert_contains "rm -rf -- /remote/molt/projects/$project_id /remote/molt/meta/$project_id" "$ssh_log"
   assert_absent "$state"
 }
 
@@ -162,4 +162,4 @@ test_install_and_uninstall_custom_home
 test_uninstall_preserves_existing_zshrc
 test_install_fails_without_mutagen
 test_reset_removes_remote_project_artifacts
-printf 'worker lifecycle tests: ok\n'
+printf 'molt lifecycle tests: ok\n'

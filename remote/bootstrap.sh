@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kept as a manual fallback. The normal path is `worker setup` over SSH.
+# Kept as a manual fallback. The normal path is `molt setup` over SSH.
 set -euo pipefail
 
 if command -v apt-get >/dev/null 2>&1; then
@@ -12,9 +12,9 @@ if command -v apt-get >/dev/null 2>&1; then
   fi
   $SUDO usermod -aG docker "$USER" 2>/dev/null || true
 else
-  echo "worker: automatic bootstrap currently supports Ubuntu/Debian" >&2
+  echo "molt: automatic bootstrap currently supports Ubuntu/Debian" >&2
   exit 1
 fi
 
-mkdir -p "$HOME/worker/projects" "$HOME/worker/meta" "$HOME/.worker" "$HOME/.config/opencode"
+mkdir -p "$HOME/molt/projects" "$HOME/molt/meta" "$HOME/.molt" "$HOME/.config/opencode"
 printf 'VM ready. Reconnect SSH if Docker group membership was just added.\n'

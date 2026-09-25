@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKER_HOME="${WORKER_HOME:-$HOME/.worker}"
-MANIFEST="$WORKER_HOME/.install-manifest"
+MOLT_HOME="${MOLT_HOME:-$HOME/.molt}"
+MANIFEST="$MOLT_HOME/.install-manifest"
 YES=0
 
 usage() {
   cat <<USAGE
-worker-uninstall — remove Worker from this Mac
+molt-uninstall — remove molt from this Mac
 
-  worker-uninstall          ask before removing Worker
-  worker-uninstall --yes    remove Worker without prompting
+  molt-uninstall          ask before removing molt
+  molt-uninstall --yes    remove molt without prompting
 USAGE
 }
 
 die() {
-  printf 'worker: %s\n' "$*" >&2
+  printf 'molt: %s\n' "$*" >&2
   exit 1
 }
 
@@ -26,17 +26,17 @@ manifest_value() {
 }
 
 remove_path_entry() {
-  local zshrc="$1" worker_home_line="$2" path_line="$3" created="$4" tmp mode
+  local zshrc="$1" molt_home_line="$2" path_line="$3" created="$4" tmp mode
   [[ -f "$zshrc" ]] || return 0
 
-  tmp="$(mktemp "${TMPDIR:-/tmp}/worker-zshrc.XXXXXX")"
-  if ! awk -v worker_home_line="$worker_home_line" -v path_line="$path_line" '
+  tmp="$(mktemp "${TMPDIR:-/tmp}/molt-zshrc.XXXXXX")"
+  if ! awk -v molt_home_line="$molt_home_line" -v path_line="$path_line" '
     { lines[NR] = $0 }
     END {
       for (i = 1; i <= NR; i++) {
-        if (lines[i] == path_line || (worker_home_line != "" && lines[i] == worker_home_line)) {
+        if (lines[i] == path_line || (molt_home_line != "" && lines[i] == molt_home_line)) {
           removed[i] = 1
-          if (lines[i] == worker_home_line && i > 1 && lines[i - 1] == "# worker") {
+          if (lines[i] == molt_home_line && i > 1 && lines[i - 1] == "# molt") {
             removed[i - 1] = 1
             if (i > 2 && lines[i - 2] == "") removed[i - 2] = 1
           }
@@ -68,30 +68,30 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-[[ "$WORKER_HOME" != "$HOME" && "$WORKER_HOME" != / ]] || die "refusing to remove WORKER_HOME=$WORKER_HOME"
+[[ "$MOLT_HOME" != "$HOME" && "$MOLT_HOME" != / ]] || die "refusing to remove MOLT_HOME=$MOLT_HOME"
 
 if [[ "$YES" != 1 ]]; then
-  printf 'Remove Worker, its local state, and dependencies installed by Worker? [y/N] '
+  printf 'Remove molt, its local state, and dependencies installed by molt? [y/N] '
   read -r answer
   [[ "$answer" == y || "$answer" == Y ]] || exit 0
 fi
 
-if [[ -x "$WORKER_HOME/bin/worker" ]]; then
-  WORKER_ASSUME_YES=1 "$WORKER_HOME/bin/worker" reset --all
-  "$WORKER_HOME/bin/worker" remove-remote-roots
-  "$WORKER_HOME/bin/worker" down || true
+if [[ -x "$MOLT_HOME/bin/molt" ]]; then
+  MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset --all
+  "$MOLT_HOME/bin/molt" remove-remote-roots
+  "$MOLT_HOME/bin/molt" down || true
 fi
 
 ZSHRC="$(manifest_value ZSHRC 2>/dev/null || printf '%s' "${ZDOTDIR:-$HOME}/.zshrc")"
-WORKER_HOME_LINE="$(manifest_value WORKER_HOME_LINE 2>/dev/null || printf '%s' '')"
-PATH_LINE="$(manifest_value PATH_LINE 2>/dev/null || printf '%s' 'export PATH="$HOME/.worker/shims:$HOME/.worker/bin:$HOME/.opencode/bin:$PATH"')"
+MOLT_HOME_LINE="$(manifest_value MOLT_HOME_LINE 2>/dev/null || printf '%s' '')"
+PATH_LINE="$(manifest_value PATH_LINE 2>/dev/null || printf '%s' 'export PATH="$HOME/.molt/shims:$HOME/.molt/bin:$HOME/.opencode/bin:$PATH"')"
 ZSHRC_CREATED="$(manifest_value ZSHRC_CREATED 2>/dev/null || printf '0')"
 PATH_ADDED="$(manifest_value PATH_ADDED 2>/dev/null || printf '0')"
 MUTAGEN_INSTALLED="$(manifest_value MUTAGEN_INSTALLED 2>/dev/null || printf '0')"
 OPENCODE_INSTALLED="$(manifest_value OPENCODE_INSTALLED 2>/dev/null || printf '0')"
 
 if [[ "$PATH_ADDED" == 1 ]]; then
-  remove_path_entry "$ZSHRC" "$WORKER_HOME_LINE" "$PATH_LINE" "$ZSHRC_CREATED"
+  remove_path_entry "$ZSHRC" "$MOLT_HOME_LINE" "$PATH_LINE" "$ZSHRC_CREATED"
 fi
 
 if [[ "$MUTAGEN_INSTALLED" == 1 ]]; then
@@ -105,5 +105,5 @@ if [[ "$OPENCODE_INSTALLED" == 1 ]]; then
   rmdir "$HOME/.opencode" 2>/dev/null || true
 fi
 
-rm -rf "$WORKER_HOME"
-printf 'worker: removed local installation\n'
+rm -rf "$MOLT_HOME"
+printf 'molt: removed local installation\n'

@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote pnpm "$@"; then
-  exec "$(worker_bin)" run pnpm "$@"
+  exec "$(molt_bin)" run pnpm "$@"
 fi
 REAL="$(real_bin pnpm)" || { echo "pnpm not found on Mac" >&2; exit 127; }
 exec "$REAL" "$@"

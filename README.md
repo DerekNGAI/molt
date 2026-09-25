@@ -1,102 +1,90 @@
-# worker
+# molt
 
-Worker keeps the Mac as the user-facing machine and runs project work inside an isolated Docker container on a remote Ubuntu or Debian VM.
+Remote project environments for macOS.
+
+molt keeps your checkout and everyday tools on your Mac while running project
+dependencies and processes inside isolated Docker containers on a remote
+Ubuntu or Debian VM.
 
 ```text
-Mac checkout  --Mutagen one-way sync-->  VM project directory
-Mac command  --SSH-->  project container
-VM port      --SSH local forward-->     Mac localhost
+Mac checkout ── Mutagen ──▶ VM mirror ── bind mount ──▶ Docker container
+Mac shell    ── SSH and port forwarding ─────────────▶ VM
 ```
 
-The normal workflow is:
+## What it does
 
-```bash
-./install.sh
-# start a new shell or source the updated ~/.zshrc
-worker
-```
-
-Remove the Mac installation with:
-
-```bash
-worker-uninstall
-```
-
-Use `worker-uninstall --yes` for automation. It resets registered projects first, removes Worker-owned host files, removes host dependencies installed by Worker, and removes the PATH block it added to `.zshrc`. The SSH host entry is managed manually, so remove that block from `~/.ssh/config` when it is no longer needed.
-
-The TUI asks for a project root, scans Git repositories below it, and lets you start a repository. Starting a repository:
-
-1. Detects its language and package manager.
-2. Creates a minimal `devenv.nix` locally when one is missing.
-3. Lets you review and commit that file locally from the TUI.
-4. Installs Docker on the VM through SSH when needed.
-5. Creates a per-project Mutagen session.
-6. Builds a reusable Nix/devenv Docker image.
-7. Starts one container for the repository.
-8. Starts a project-specific OpenCode server.
-9. Forwards OpenCode and declared project ports to the Mac.
+- Detects Node, Rust, Go, and Python projects.
+- Generates a small `devenv.nix` when a project does not have one.
+- Creates one Mutagen mirror and Docker container per project.
+- Runs supported development commands in the remote container through local
+  shims.
+- Starts an OpenCode server for each active project and forwards project ports
+  to `localhost`.
 
 ## Requirements
 
-Mac:
+### Mac
 
+- macOS with Bash and Zsh
 - Git
-- SSH key access to the VM
-- Homebrew for automatic Mutagen installation, or Mutagen installed manually
-- A local OpenCode client; `install.sh` installs it when `curl` is available
+- SSH access to the VM
+- [Mutagen](https://mutagen.io/)
+- [OpenCode](https://opencode.ai/)
+- Homebrew and `curl` if you want `install.sh` to install missing tools
 
-VM:
+### Remote VM
 
 - Ubuntu or Debian
-- Reachable through the configured SSH host
 - A user with `sudo`
+- Docker, installed automatically by `molt setup`
 - Enough disk for Docker images, Nix packages, and project caches
 
-The SSH host must be configured before running `worker setup`. Use the example in [macos/ssh_config.snippet](macos/ssh_config.snippet).
+## Quick start
 
-## First setup
+1. Configure an SSH host using [macos/ssh_config.snippet](macos/ssh_config.snippet).
+   Replace `HostName`, `User`, and `IdentityFile` for your VM.
+2. Install molt from this checkout:
 
-Copy the repository somewhere permanent and run:
+   ```bash
+   ./install.sh
+   source ~/.zshrc
+   ```
+
+3. Edit `~/.molt/config` if the defaults do not match your setup.
+4. Check the connection and prepare the VM:
+
+   ```bash
+   molt doctor
+   molt setup
+   ```
+
+5. Open the project picker:
+
+   ```bash
+   molt
+   ```
+
+Choose a project and select **start**. molt will sync the checkout, build its
+environment, start the container, and forward its ports.
+
+## Configuration
+
+`install.sh` creates `~/.molt/config` from [config.example](config.example):
 
 ```bash
-./install.sh
+MOLT_HOST=oci-dev
+MOLT_ROOT="$HOME/Documents/Github"
+MOLT_REMOTE_ROOT='$HOME/molt/projects'
+MOLT_REMOTE_META_ROOT='$HOME/molt/meta'
+MOLT_OPENCODE_BASE_PORT=4100
 ```
 
-`install.sh` adds this to `~/.zshrc`:
-
-```bash
-export WORKER_HOME="$HOME/.worker"
-export PATH="$HOME/.worker/shims:$HOME/.worker/bin:$HOME/.opencode/bin:$PATH"
-```
-
-Create or edit `~/.worker/config`:
-
-```bash
-WORKER_HOST=oci-dev
-WORKER_ROOT="$HOME/Documents/Github"
-WORKER_REMOTE_ROOT='$HOME/worker/projects'
-WORKER_REMOTE_META_ROOT='$HOME/worker/meta'
-WORKER_OPENCODE_BASE_PORT=4100
-```
-
-Append [macos/ssh_config.snippet](macos/ssh_config.snippet) to `~/.ssh/config` and replace `HostName`, `User`, and `IdentityFile`.
-
-Check the connection and VM prerequisites:
-
-```bash
-worker doctor
-worker setup
-```
-
-`worker setup` is safe to run repeatedly. It installs Docker and the small set of host packages needed by the worker on Ubuntu or Debian.
+The remote root values use `$HOME` on the VM. Each project receives a stable
+directory and an OpenCode port derived from its repository path.
 
 ## Daily use
 
-```bash
-worker
-```
-
-Select a repository and choose `start`. After it is running, enter the repository in any shell:
+Once a project is running, work from its Mac checkout as usual:
 
 ```bash
 cd ~/Documents/Github/app
@@ -107,39 +95,45 @@ git status
 nvim .
 ```
 
-The command shims route supported development commands to the project container. Git, editors, search tools, and ordinary shell commands stay on the Mac. Use `WORKER_LOCAL=1` to bypass routing for one command:
+The shims route supported development commands to the active project
+container. Git, editors, search tools, and ordinary shell commands remain
+local. Run one command locally with:
 
 ```bash
-WORKER_LOCAL=1 pnpm test
+MOLT_LOCAL=1 pnpm test
 ```
 
-Use `worker status` to see active containers, synchronization, and forwarded ports. Use `worker stop` or `worker down` when finished.
+Use `molt status` to see active containers, synchronization, and forwarded
+ports. Use `molt stop` or `molt down` when you are finished.
 
 ## Commands
 
-```text
-worker                         open the TUI
-worker scan [root]             list Git repositories
-worker inspect [repo]          inspect detected project files
-worker generate-env [repo]     create devenv.nix locally
-worker setup                   prepare the VM
-worker register [repo]         register a repository without starting it
-worker start [repo]            sync, build, and start the project
-worker stop [repo]             stop one project
-worker up                      start all registered projects
-worker down                    stop all active projects
-worker status                  show the worker state
-worker doctor                  check local and VM prerequisites
-worker run <command> [args]    execute inside the current project container
-worker oc [args]               attach the local OpenCode client
-worker logs [repo]             show the remote OpenCode log
-worker reset [repo]            remove project worker state after confirmation
-worker reset --all             remove all project worker state after confirmation
-```
+| Command | Description |
+| --- | --- |
+| `molt` | Open the project TUI |
+| `molt scan [root]` | List Git repositories |
+| `molt inspect [repo]` | Inspect runtime and project files |
+| `molt generate-env [repo]` | Create a minimal `devenv.nix` |
+| `molt setup` | Prepare the VM |
+| `molt register [repo]` | Register a repository |
+| `molt start [repo]` | Sync, build, and start a project |
+| `molt stop [repo]` | Stop one project |
+| `molt up` | Start all registered projects |
+| `molt down` | Stop all active projects |
+| `molt status` | Show SSH, project, container, and port state |
+| `molt doctor` | Check local and VM prerequisites |
+| `molt run <command> [args]` | Run a command in the active container |
+| `molt ssh [args]` | Open an SSH session to the VM |
+| `molt oc [args]` | Attach the local OpenCode client remotely |
+| `molt logs [repo]` | Show the remote OpenCode log |
+| `molt review-env [repo]` | Review generated `devenv.nix` |
+| `molt reset [repo]` | Remove one project's remote and local state |
+| `molt reset --all` | Remove all project state |
 
 ## Project configuration
 
-Most projects need no worker file. Detection handles Node, Rust, Go, and Python projects. A repository can declare ports in an optional `.worker.yml`:
+Most repositories need no molt file. To declare ports that should always be
+forwarded, add an optional `.molt.yml` to the repository:
 
 ```yaml
 ports:
@@ -147,30 +141,51 @@ ports:
   - 4173
 ```
 
-The file is read locally and can be committed with the repository. The worker also forwards newly opened ports while an attached remote command is running.
+The file is read locally and can be committed with the project. While a
+remote command is attached, molt also detects newly opened ports and forwards
+them automatically.
 
-## Files and ownership
+## Where files live
 
 ```text
-Mac checkout                 source of truth and Git repository
-VM ~/worker/projects/<id>    Mutagen mirror
-VM ~/worker/meta/<id>        Dockerfile, password, and OpenCode log
-VM ~/.config/opencode         provider configuration shared by project containers
-VM Docker container          devenv shell, dependencies, processes, and tools
-VM Docker volume             language and package caches
-~/.worker/projects/<id>      local project registry and worker state
+Mac checkout              source of truth and Git repository
+VM ~/molt/projects/<id>   Mutagen mirror
+VM ~/molt/meta/<id>       Dockerfile, password, and OpenCode log
+VM ~/.config/opencode     shared OpenCode provider configuration
+VM Docker container       devenv shell, dependencies, and processes
+VM Docker volume           language and package caches
+~/.molt/projects/<id>     local project registry and state
 ```
 
-Mutagen uses one-way Mac-to-VM synchronization. `.git`, dependencies, build output, virtual environments, and common caches are excluded from the mirror.
+Mutagen synchronizes the checkout one way from the Mac to the VM. Git data,
+dependencies, build output, virtual environments, and common caches stay out
+of the mirror. Generated `devenv.nix` files are written and committed on the
+Mac.
 
-The generated `devenv.nix` is written and committed on the Mac. The VM only consumes the synchronized repository.
+## Reset and uninstall
 
-## Resetting a project
+Reset a project when you want to remove its container, image, Mutagen session,
+forwarded ports, remote mirror, and local state:
 
 ```bash
-worker reset
+molt reset
 ```
 
-This removes the project container, image, Mutagen session, forwarded ports, and local worker state after confirmation. It does not delete the Mac checkout or its Git history.
+This keeps the Mac checkout and its Git history. To remove the complete Mac
+installation and molt-managed dependencies:
 
-Reset also removes the remote project mirror, project metadata, and the per-project Docker cache volume. Shared VM Docker packages and the shared OpenCode configuration remain available for other projects.
+```bash
+molt-uninstall --yes
+```
+
+The SSH host block in `~/.ssh/config` is managed manually and should be
+removed separately when it is no longer needed.
+
+## Development
+
+Run the shell checks from the repository root:
+
+```bash
+bash tests/molt_test.sh
+bash tests/lifecycle_test.sh
+```

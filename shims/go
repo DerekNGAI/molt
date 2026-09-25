@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote go "$@"; then
-  exec "$(worker_bin)" run go "$@"
+  exec "$(molt_bin)" run go "$@"
 fi
 REAL="$(real_bin go)" || { echo "go not found on Mac" >&2; exit 127; }
 exec "$REAL" "$@"

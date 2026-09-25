@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/_lib.sh"
 
 if should_remote pip3 "$@"; then
-  exec "$(worker_bin)" run pip3 "$@"
+  exec "$(molt_bin)" run pip3 "$@"
 fi
 REAL="$(real_bin pip3)" || { echo "pip3 not found on Mac" >&2; exit 127; }
 exec "$REAL" "$@"

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Install onto this Mac: ~/.worker/{bin,shims,config}
+# Install onto this Mac: ~/.molt/{bin,shims,config}
 set -euo pipefail
 
 die() {
-  printf 'worker: %s\n' "$*" >&2
+  printf 'molt: %s\n' "$*" >&2
   exit 1
 }
 
@@ -16,7 +16,7 @@ manifest_value() {
 write_manifest() {
   (umask 077; cat >"$MANIFEST" <<EOF
 ZSHRC=$ZSHRC
-WORKER_HOME_LINE=$WORKER_HOME_LINE
+MOLT_HOME_LINE=$MOLT_HOME_LINE
 PATH_LINE=$PATH_LINE
 ZSHRC_CREATED=$ZSHRC_CREATED
 PATH_ADDED=$PATH_ADDED
@@ -27,13 +27,13 @@ EOF
 }
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DEST="${WORKER_HOME:-$HOME/.worker}"
+DEST="${MOLT_HOME:-$HOME/.molt}"
 mkdir -p "$DEST"
 DEST="$(cd "$DEST" && pwd -P)"
-[[ "$DEST" != "$SRC" && "$DEST" != "$SRC/"* ]] || die "WORKER_HOME must be outside the source checkout"
+[[ "$DEST" != "$SRC" && "$DEST" != "$SRC/"* ]] || die "MOLT_HOME must be outside the source checkout"
 
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
-WORKER_HOME_LINE="export WORKER_HOME=\"$DEST\""
+MOLT_HOME_LINE="export MOLT_HOME=\"$DEST\""
 PATH_LINE="export PATH=\"$DEST/shims:$DEST/bin:$HOME/.opencode/bin:\$PATH\""
 MANIFEST="$DEST/.install-manifest"
 
@@ -73,12 +73,12 @@ rm -rf "$DEST/bin" "$DEST/shims"
 mkdir -p "$DEST/bin" "$DEST/shims"
 cp -R "$SRC/bin/." "$DEST/bin/"
 cp -R "$SRC/shims/." "$DEST/shims/"
-cp "$SRC/uninstall.sh" "$DEST/bin/worker-uninstall"
-chmod +x "$DEST/bin/worker" "$DEST/bin/worker-uninstall" "$DEST/shims/"*
+cp "$SRC/uninstall.sh" "$DEST/bin/molt-uninstall"
+chmod +x "$DEST/bin/molt" "$DEST/bin/molt-uninstall" "$DEST/shims/"*
 
 if [[ ! -f "$DEST/config" ]]; then
   cp "$SRC/config.example" "$DEST/config"
-  echo "wrote $DEST/config — edit WORKER_HOST"
+  echo "wrote $DEST/config — edit MOLT_HOST"
 fi
 
 if [[ ! -f "$DEST/opencode.password" ]]; then
@@ -93,8 +93,8 @@ if [[ ! -f "$ZSHRC" ]]; then
 fi
 if ! grep -Fqx "$PATH_LINE" "$ZSHRC"; then
   {
-    printf '\n# worker\n'
-    printf '%s\n' "$WORKER_HOME_LINE"
+    printf '\n# molt\n'
+    printf '%s\n' "$MOLT_HOME_LINE"
     printf '%s\n' "$PATH_LINE"
   } >>"$ZSHRC"
   PATH_ADDED=1
@@ -105,4 +105,4 @@ echo
 echo "Updated $ZSHRC. Start a new shell or run: source $ZSHRC"
 echo
 echo "Append $SRC/macos/ssh_config.snippet to ~/.ssh/config"
-echo "Then: worker"
+echo "Then: molt"
