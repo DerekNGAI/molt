@@ -118,10 +118,8 @@ manifest_ports() {
   ' "$manifest"
 }
 
-load_project() {
-  local path="${1:-.}" state
-  path="$(repo_root "$path")"
-  state="$(project_state_dir "$path")"
+load_project_state() {
+  local state="$1"
   [[ -f "$state/path" ]] || return 1
 
   PROJECT_STATE="$state"
@@ -139,6 +137,13 @@ load_project() {
   PROJECT_OPENCODE_PORT="$(read_value "$state/opencode_port")"
   PROJECT_ACTIVE="$(read_value "$state/active")"
   return 0
+}
+
+load_project() {
+  local path="${1:-.}" state
+  path="$(repo_root "$path")"
+  state="$(project_state_dir "$path")"
+  load_project_state "$state"
 }
 
 save_project() {
@@ -603,6 +608,24 @@ cmd_start() {
   cmd_setup
   load_project "$path" || die "could not load project state"
   set_remote_paths "$(remote_home)"
+  tmp=""
+  start_cleanup() {
+    local rc=$?
+    trap - EXIT
+    [[ -z "${tmp:-}" ]] || rm -f "$tmp"
+    if [[ "$rc" -ne 0 ]]; then
+      if [[ -n "${PROJECT_SYNC:-}" ]]; then
+        mutagen sync terminate "$PROJECT_SYNC" >/dev/null 2>&1 || true
+      fi
+      if ssh_ok; then
+        cleanup_project_remote_connected || true
+      fi
+      PROJECT_ACTIVE=0
+      save_project || true
+    fi
+    exit "$rc"
+  }
+  trap start_cleanup EXIT
   remote_mkdir "$PROJECT_REMOTE_PATH"
   remote_mkdir "$PROJECT_REMOTE_META"
   remote_mkdir "$PROJECT_REMOTE_OPENCODE_CONFIG"
@@ -620,6 +643,7 @@ cmd_start() {
   save_project
   forward_project_ports
   log "$PROJECT_NAME is running in $WORKER_HOST ($PROJECT_CONTAINER)"
+  trap - EXIT
 }
 
 cmd_stop_project() {
@@ -818,19 +842,82 @@ commit_generated_env() {
   esac
 }
 
+cleanup_project_remote_connected() {
+  local -a paths=()
+  [[ -n "${PROJECT_REMOTE_PATH:-}" ]] && paths+=("$PROJECT_REMOTE_PATH")
+  [[ -n "${PROJECT_REMOTE_META:-}" ]] && paths+=("$PROJECT_REMOTE_META")
+
+  remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER") >/dev/null 2>&1 || true"
+  remote_run "docker image rm $(quote_remote "$PROJECT_IMAGE") >/dev/null 2>&1 || true"
+  remote_run "docker volume rm -f $(quote_remote "worker-cache-$PROJECT_ID") >/dev/null 2>&1 || true"
+  if [[ ${#paths[@]} -gt 0 ]]; then
+    remote_run "rm -rf -- $(quote_remote "${paths[@]}")"
+  fi
+  cancel_project_forwards
+}
+
+cleanup_project_remote() {
+  ssh_up
+  cleanup_project_remote_connected
+}
+
+reset_loaded_project() {
+  mutagen sync terminate "$PROJECT_SYNC" >/dev/null 2>&1 || true
+  cleanup_project_remote
+  rm -rf "$PROJECT_STATE"
+  log "reset $PROJECT_NAME"
+}
+
+cmd_reset_all() {
+  local state count=0 answer
+  for state in "$WORKER_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    count=$((count + 1))
+  done
+  [[ "$count" -gt 0 ]] || return 0
+
+  printf 'Remove all remote project resources and local Worker state? [y/N] '
+  if [[ "${WORKER_ASSUME_YES:-0}" == 1 ]]; then
+    answer=y
+  else
+    read -r answer
+  fi
+  [[ "$answer" == y || "$answer" == Y ]] || return 0
+
+  for state in "$WORKER_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    load_project_state "$(dirname "$state")" || continue
+    reset_loaded_project
+  done
+  ssh_down
+}
+
+cmd_remove_remote_roots() {
+  local home root meta parent
+  ssh_up
+  home="$(remote_home)"
+  root="$(expand_remote_path "$WORKER_REMOTE_ROOT" "$home")"
+  meta="$(expand_remote_path "$WORKER_REMOTE_META_ROOT" "$home")"
+  parent="$(dirname "$root")"
+  remote_run "rmdir -- $(quote_remote "$root" "$meta" "$parent" "$home/.worker") 2>/dev/null || true"
+}
+
 cmd_reset() {
+  if [[ "${1:-}" == --all ]]; then
+    cmd_reset_all
+    return 0
+  fi
+
   local path="$(repo_root "${1:-.}")" answer
   load_project "$path" || return 0
   printf 'Remove the remote container, image, sync, and local worker state for %s? [y/N] ' "$PROJECT_NAME"
-  read -r answer
+  if [[ "${WORKER_ASSUME_YES:-0}" == 1 ]]; then
+    answer=y
+  else
+    read -r answer
+  fi
   [[ "$answer" == y || "$answer" == Y ]] || return 0
-  ssh_up
-  remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER") >/dev/null 2>&1 || true"
-  remote_run "docker image rm $(quote_remote "$PROJECT_IMAGE") >/dev/null 2>&1 || true"
-  mutagen sync terminate "$PROJECT_SYNC" >/dev/null 2>&1 || true
-  cancel_project_forwards
-  rm -rf "$PROJECT_STATE"
-  log "reset $PROJECT_NAME"
+  reset_loaded_project
 }
 
 cmd_tui() {
@@ -912,6 +999,8 @@ worker — local shell, remote project environments
   worker logs [repo]             show the remote OpenCode log
   worker review-env [repo]       review generated devenv.nix
   worker reset [repo]            remove remote and local project worker state
+  worker reset --all             remove all remote and local project state
+  worker remove-remote-roots     remove empty Worker directories on the VM
 
   WORKER_LOCAL=1 <command>       force a command to run on the Mac
   WORKER_REMOTE_ALL=1 <command> route every supported shim command remotely
@@ -948,6 +1037,7 @@ main() {
     review-env) cmd_review_env "$@" ;;
     commit-env) commit_generated_env "$(repo_root "${1:-.}")" ;;
     reset) cmd_reset "$@" ;;
+    remove-remote-roots) cmd_remove_remote_roots "$@" ;;
     help|-h|--help) usage ;;
     *) die "unknown command: $command (try worker help)" ;;
   esac

@@ -16,6 +16,14 @@ The normal workflow is:
 worker
 ```
 
+Remove the Mac installation with:
+
+```bash
+worker-uninstall
+```
+
+Use `worker-uninstall --yes` for automation. It resets registered projects first, removes Worker-owned host files, removes host dependencies installed by Worker, and removes the PATH block it added to `.zshrc`. The SSH host entry is managed manually, so remove that block from `~/.ssh/config` when it is no longer needed.
+
 The TUI asks for a project root, scans Git repositories below it, and lets you start a repository. Starting a repository:
 
 1. Detects its language and package manager.
@@ -57,6 +65,7 @@ Copy the repository somewhere permanent and run:
 `install.sh` adds this to `~/.zshrc`:
 
 ```bash
+export WORKER_HOME="$HOME/.worker"
 export PATH="$HOME/.worker/shims:$HOME/.worker/bin:$HOME/.opencode/bin:$PATH"
 ```
 
@@ -125,6 +134,7 @@ worker run <command> [args]    execute inside the current project container
 worker oc [args]               attach the local OpenCode client
 worker logs [repo]             show the remote OpenCode log
 worker reset [repo]            remove project worker state after confirmation
+worker reset --all             remove all project worker state after confirmation
 ```
 
 ## Project configuration
@@ -162,3 +172,5 @@ worker reset
 ```
 
 This removes the project container, image, Mutagen session, forwarded ports, and local worker state after confirmation. It does not delete the Mac checkout or its Git history.
+
+Reset also removes the remote project mirror, project metadata, and the per-project Docker cache volume. Shared VM Docker packages and the shared OpenCode configuration remain available for other projects.

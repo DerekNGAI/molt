@@ -6,7 +6,7 @@ worker_bin() {
     command -v worker
     return
   fi
-  echo "$HOME/.worker/bin/worker"
+  echo "${WORKER_HOME:-$HOME/.worker}/bin/worker"
 }
 
 # Return 0 if this invocation should run in the active project container.

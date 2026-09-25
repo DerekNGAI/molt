@@ -10,7 +10,7 @@ WORKER_REMOTE_META_ROOT='$HOME/worker/meta'      # expanded on the VM
 WORKER_OPENCODE_BASE_PORT=4100
 
 # File containing only the OpenCode server password (chmod 600).
-WORKER_OPENCODE_PASSWORD_FILE="$HOME/.worker/opencode.password"
+WORKER_OPENCODE_PASSWORD_FILE="${WORKER_OPENCODE_PASSWORD_FILE:-$WORKER_HOME/opencode.password}"
 
 # Ports we never try to forward from the VM.
 WORKER_PORT_DENY='22 53 111 631'
