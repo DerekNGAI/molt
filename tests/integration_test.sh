@@ -31,7 +31,7 @@ if [[ -n "${MOLT_INTEGRATION_TOOLS:-}" ]]; then
   export MOLT_MUTAGEN_BINARY="$MOLT_INTEGRATION_TOOLS/mutagen/mutagen"
   export MOLT_OPENCODE_BINARY="$MOLT_INTEGRATION_TOOLS/opencode/opencode"
 fi
-/bin/bash "$ROOT/install.sh"
+/bin/bash "$ROOT/install.sh" --non-interactive
 ssh-keygen -q -t ed25519 -N '' -f "$MOLT_HOME/state/ssh/id_ed25519"
 "$DOCKER" build -t "$name" -f "$ROOT/tests/integration.Dockerfile" "$ROOT/tests"
 "$DOCKER" run -d --privileged --name "$name" -e DOCKER_TLS_CERTDIR= \

@@ -57,7 +57,7 @@ molt_state() {
   for path in state projects; do
     [[ ! -L "$MOLT_HOME/$path" ]] || { molt_error "symlinked $path directory"; return 1; }
   done
-  for path in home config data cache run tmp ssh remotes home/.mutagen config/opencode data/opencode cache/opencode run/opencode; do
+  for path in home config data cache run tmp ssh remotes ui shell ssh/profiles ssh/keys home/.mutagen config/opencode data/opencode cache/opencode run/opencode; do
     [[ "$(molt_canonical "$MOLT_HOME/state/$path")" == "$MOLT_HOME/state/$path" ]] || {
       molt_error "state/$path points outside its contained location"; return 1;
     }
@@ -88,6 +88,40 @@ molt_dependency() {
   done < <(type -aP "$name" 2>/dev/null || true)
   return 1
 }
+
+molt_download_tool() {
+  local name="$1" destination="$2" lock="$3" asset repo version checksum archive
+  case "$(uname -s)/$(uname -m)/$name" in
+    Darwin/arm64/mutagen) asset=mutagen_darwin_arm64_v0.18.1.tar.gz ;;
+    Darwin/x86_64/mutagen) asset=mutagen_darwin_amd64_v0.18.1.tar.gz ;;
+    Darwin/arm64/opencode) asset=opencode-darwin-arm64.zip ;;
+    Darwin/x86_64/opencode) asset=opencode-darwin-x64-baseline.zip ;;
+    Darwin/arm64/gum) asset=gum_2.0.2_Darwin_arm64.tar.gz ;;
+    Darwin/x86_64/gum) asset=gum_2.0.2_Darwin_x86_64.tar.gz ;;
+    *) molt_error 'automatic downloads support macOS arm64 and x86_64'; return 1 ;;
+  esac
+  case "$name" in
+    mutagen) version=v0.18.1; repo=mutagen-io/mutagen ;;
+    opencode) version=v1.18.33; repo=anomalyco/opencode ;;
+    gum) version=v2.0.2; repo=charmbracelet/gum ;;
+  esac
+  checksum="$(awk -v asset="$asset" '$2==asset {print $1}' "$lock")"
+  [[ "$checksum" =~ ^[a-f0-9]{64}$ ]] || { molt_error "missing checksum for $asset"; return 1; }
+  archive="$destination/$asset"
+  curl -fsSL --retry 2 "https://github.com/$repo/releases/download/$version/$asset" -o "$archive" || return 1
+  [[ "$(shasum -a 256 "$archive" | cut -d ' ' -f1)" == "$checksum" ]] || {
+    molt_error "checksum mismatch for $asset"; return 1;
+  }
+  mkdir -p "$destination/tools/$name"
+  if [[ "$asset" == *.zip ]]; then unzip -q "$archive" -d "$destination/tools/$name" || return 1;
+  elif [[ "$name" == gum ]]; then tar -xzf "$archive" --strip-components=1 -C "$destination/tools/$name" || return 1;
+  else tar -xzf "$archive" -C "$destination/tools/$name" || return 1; fi
+  rm -f "$archive"
+  [[ -x "$destination/tools/$name/$name" ]] || { molt_error "missing executable in $asset"; return 1; }
+  printf '%s\n' "$destination/tools/$name/$name"
+}
+
+molt_gum_version() { [[ "$("$1" --version)" == 'gum version v2.0.2 '* ]]; }
 
 molt_mutagen() (
   local binary
@@ -160,9 +194,13 @@ molt_host_key() { printf '%s' "$1" | shasum -a 256 | cut -c1-20; }
 
 molt_ssh() (
   molt_state || exit 1
+  local known_hosts
+  [[ ! -L "$MOLT_HOME/state/ssh/known_hosts" ]] || { molt_error 'symlinked known-hosts file'; exit 1; }
+  known_hosts="${MOLT_HOME//%/%%}/state/ssh/known_hosts"
+  known_hosts="${known_hosts//\\/\\\\}"; known_hosts="${known_hosts//\"/\\\"}"
   local -a options
   options=(-o ControlMaster=auto -o 'ControlPath=./c-%C' -o ControlPersist=60
-    -o "UserKnownHostsFile=$MOLT_HOME/state/ssh/known_hosts" -o ConnectTimeout=10
+    -o "UserKnownHostsFile=\"$known_hosts\"" -o ConnectTimeout=10
     -o ServerAliveInterval=15 -o ServerAliveCountMax=2)
   if [[ -n "${MOLT_SSH_CONFIG:-}" ]]; then options+=(-F "$MOLT_SSH_CONFIG");
   elif [[ -f "${MOLT_USER_HOME:-$HOME}/.ssh/config" ]]; then options+=(-F "${MOLT_USER_HOME:-$HOME}/.ssh/config");

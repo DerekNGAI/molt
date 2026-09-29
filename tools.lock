@@ -1,8 +1,10 @@
-# SHA-256 hashes from Mutagen SHA256SUMS and OpenCode GitHub release asset digests.
-# Mutagen v0.18.1; OpenCode v1.18.33. Update version and hashes together.
+# SHA-256 hashes from Mutagen SHA256SUMS and GitHub release asset digests.
+# Mutagen v0.18.1; OpenCode v1.18.33; Gum v2.0.2. Update version and hashes together.
 6f810416d9e5fc4fd5e18431146f8b3c5a2056ba5a24f76c1e66da86eb3257e2 mutagen_darwin_arm64_v0.18.1.tar.gz
 7d06f7d8fcfe90bc7e55cc834a2f2f20c2e0af9ea9bc35911fc4341ad56a9bbf mutagen_darwin_amd64_v0.18.1.tar.gz
 24b12873e605b3db3387cb355f43ba7451cd6065c180d8c188663337d2eeb553 opencode-darwin-arm64.zip
 61fd2f89695c0fc75053737189e489d490bc4bdccd9dbfd78c6532101df9e9fa opencode-darwin-x64-baseline.zip
 c63486624621924bf43be5c01abd252885661a734814224f6d70188a33aea858 opencode-linux-arm64.tar.gz
 440ca65423e99505cf285f8660684503cc54f6f9e6b64cfcd11bf412369be6d5 opencode-linux-x64-baseline.tar.gz
+4777a69b1170b8db23c95d5889fb32186cfda1a3ac950d339aa17e3513633890 gum_2.0.2_Darwin_arm64.tar.gz
+5374966c7c7199ea879fcaa525ddc6d447a098d3d35496e430a9a1ef38d30485 gum_2.0.2_Darwin_x86_64.tar.gz

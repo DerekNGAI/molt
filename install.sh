@@ -5,10 +5,27 @@ umask 077
 SRC="$(cd "$(dirname "$0")" && pwd -P)"
 source "$SRC/bin/_molt.sh"
 MOLT_HOME="${MOLT_HOME:-$HOME/.molt}"
+INTERACTIVE=auto
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --non-interactive) INTERACTIVE=0 ;;
+    --interactive) INTERACTIVE=1 ;;
+    --help|-h) printf 'install.sh [--interactive|--non-interactive]\n\nInteractive terminals open the local setup wizard.\n'; exit 0 ;;
+    *) molt_error "unknown installer option: $1"; exit 2 ;;
+  esac
+  shift
+done
+if [[ "$INTERACTIVE" == 1 || ( "$INTERACTIVE" == auto && -t 0 && -t 1 ) ]]; then
+  source "$SRC/bin/_tui.sh"
+  tui_install "$SRC"
+  exit $?
+fi
 molt_safe_home || exit 1
-[[ "$MOLT_HOME" != "$SRC" && "$MOLT_HOME" != "$SRC/"* && "$SRC" != "$MOLT_HOME/"* ]] || {
-  molt_error 'MOLT_HOME must not overlap the source checkout'; exit 1;
-}
+if [[ "$MOLT_HOME" == "$SRC" || "$MOLT_HOME" == "$SRC/"* || "$SRC" == "$MOLT_HOME/"* ]]; then
+  [[ "$SRC" == "$MOLT_HOME/releases/"* && "$SRC" == "$(molt_canonical "$MOLT_HOME/current")" ]] && molt_owned_home || {
+    molt_error 'MOLT_HOME must not overlap the source checkout'; exit 1;
+  }
+fi
 
 FRESH=0; LEGACY=0; STAGE=""; SWITCHED=0; COMMITTED=0; LEGACY_MOVED=0
 OLD_CURRENT="$(readlink "$MOLT_HOME/current" 2>/dev/null || true)"
@@ -92,34 +109,28 @@ mkdir -p "$STAGE/bin" "$STAGE/shims" "$STAGE/tools"
 cp -R "$SRC/bin/." "$STAGE/bin/"
 cp -R "$SRC/shims/." "$STAGE/shims/"
 cp "$SRC/uninstall.sh" "$STAGE/bin/molt-uninstall"
+cp "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/config.example" "$STAGE/"
 cp "$SRC/tools.lock" "$STAGE/tools.lock"
 chmod +x "$STAGE/bin/"* "$STAGE/shims/"*
+cat >"$STAGE/MOLT.command" <<'LAUNCHER'
+#!/usr/bin/env bash
+here="$(cd "$(dirname "$0")" && pwd -P)"
+if [[ -f "$here/.install-manifest" ]]; then export MOLT_HOME="$here";
+else export MOLT_HOME="${here%/releases/*}"; fi
+exec "$MOLT_HOME/bin/molt" tui
+LAUNCHER
+chmod +x "$STAGE/MOLT.command"
 mkdir -p "$STAGE/bin/transport"
-ln -s ../mutagen-transport "$STAGE/bin/transport/ssh"
-ln -s ../mutagen-transport "$STAGE/bin/transport/scp"
+for name in ssh scp; do
+  if [[ -L "$STAGE/bin/transport/$name" ]]; then
+    [[ "$(readlink "$STAGE/bin/transport/$name")" == ../mutagen-transport ]] || { molt_error 'unexpected transport symlink'; exit 1; }
+  elif [[ -e "$STAGE/bin/transport/$name" ]]; then molt_error 'unexpected transport executable'; exit 1;
+  else ln -s ../mutagen-transport "$STAGE/bin/transport/$name"; fi
+done
 
 download_tool() {
-  local name="$1" asset checksum version archive
-  case "$(uname -s)/$(uname -m)/$name" in
-    Darwin/arm64/mutagen) asset=mutagen_darwin_arm64_v0.18.1.tar.gz ;;
-    Darwin/x86_64/mutagen) asset=mutagen_darwin_amd64_v0.18.1.tar.gz ;;
-    Darwin/arm64/opencode) asset=opencode-darwin-arm64.zip ;;
-    Darwin/x86_64/opencode) asset=opencode-darwin-x64-baseline.zip ;;
-    *) molt_error 'automatic downloads support macOS arm64 and x86_64'; return 1 ;;
-  esac
-  checksum="$(awk -v asset="$asset" '$2==asset {print $1}' "$SRC/tools.lock")"
-  archive="$STAGE/$asset"
-  if [[ "$name" == mutagen ]]; then version=v0.18.1; repo=mutagen-io/mutagen;
-  else version=v1.18.33; repo=anomalyco/opencode; fi
-  curl -fsSL --retry 2 "https://github.com/$repo/releases/download/$version/$asset" -o "$archive" || return 1
-  [[ "$(shasum -a 256 "$archive" | cut -d ' ' -f1)" == "$checksum" ]] || {
-    molt_error "checksum mismatch for $asset"; return 1;
-  }
-  mkdir -p "$STAGE/tools/$name"
-  if [[ "$asset" == *.zip ]]; then unzip -q "$archive" -d "$STAGE/tools/$name";
-  else tar -xzf "$archive" -C "$STAGE/tools/$name"; fi
-  rm -f "$archive"
-  printf '%s\n' "$MOLT_HOME/tools/$name/$name"
+  molt_download_tool "$1" "$STAGE" "$SRC/tools.lock" >/dev/null || return 1
+  printf '%s\n' "$MOLT_HOME/tools/$1/$1"
 }
 
 resolve_tool() {
@@ -135,6 +146,12 @@ resolve_tool() {
 }
 MUTAGEN_BINARY="$(resolve_tool mutagen "${MOLT_MUTAGEN_BINARY:-}")"
 OPENCODE_BINARY="$(resolve_tool opencode "${MOLT_OPENCODE_BINARY:-}")"
+if [[ -n "${MOLT_BOOTSTRAP_GUM_BINARY:-}" ]]; then
+  molt_gum_version "$MOLT_BOOTSTRAP_GUM_BINARY" || { molt_error 'Gum 2.0.2 is required'; exit 1; }
+  mkdir -p "$STAGE/tools/gum"
+  cp "$MOLT_BOOTSTRAP_GUM_BINARY" "$STAGE/tools/gum/gum"
+  GUM_BINARY="$MOLT_HOME/tools/gum/gum"
+else GUM_BINARY="$(resolve_tool gum "${MOLT_GUM_BINARY:-}")"; fi
 check_binary() {
   local binary="$1"
   case "$binary" in "$MOLT_HOME/tools/"*) binary="$STAGE/tools/${binary#"$MOLT_HOME/tools/"}" ;; esac
@@ -144,6 +161,7 @@ check_binary() {
   molt_error 'Mutagen 0.18.1 is required for the contained transport'; exit 1;
 }
 [[ -n "$(check_binary "$OPENCODE_BINARY" --version)" ]] || { molt_error 'invalid OpenCode client'; exit 1; }
+[[ "$(check_binary "$GUM_BINARY" --version)" == 'gum version v2.0.2 '* ]] || { molt_error 'Gum 2.0.2 is required for the control center'; exit 1; }
 
 cat >"$STAGE/manifest" <<EOF
 FORMAT=2
@@ -152,6 +170,7 @@ ROOT=$MOLT_HOME
 STATUS=ready
 MUTAGEN_BINARY=$MUTAGEN_BINARY
 OPENCODE_BINARY=$OPENCODE_BINARY
+GUM_BINARY=$GUM_BINARY
 EOF
 # Activation derives its own path, including custom paths with spaces or quotes.
 cat >"$STAGE/activate.zsh" <<'ACTIVATE'
@@ -178,7 +197,7 @@ fi
 [[ -f "$MOLT_HOME/config" ]] || cp "$SRC/config.example" "$MOLT_HOME/config"
 [[ -f "$MOLT_HOME/opencode.password" ]] || : >"$MOLT_HOME/opencode.password"
 chmod 600 "$MOLT_HOME/opencode.password"
-for name in bin shims tools; do
+for name in bin shims tools MOLT.command; do
   if [[ -L "$MOLT_HOME/$name" ]]; then
     [[ "$(readlink "$MOLT_HOME/$name")" == "current/$name" ]] || { molt_error "unexpected $name symlink"; exit 1; }
   elif [[ -e "$MOLT_HOME/$name" ]]; then molt_error "unexpected $name directory"; exit 1

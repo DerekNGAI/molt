@@ -1,0 +1,87 @@
+#!/usr/bin/expect -f
+# Fresh install -> private SSH profile -> prepared VM -> activation -> complete uninstall.
+set timeout 12
+log_user 0
+proc see {text} {
+  global spawn_id
+  expect {
+    -ex $text { return }
+    timeout { puts stderr "FAIL: setup did not show '$text'"; exit 1 }
+    eof { puts stderr "FAIL: setup exited before '$text'"; exit 1 }
+  }
+}
+proc menu {text} { see $text; see "submit" }
+proc enter {} { global spawn_id; send -- "\r"; after 120 }
+proc down {count} { global spawn_id; for {set i 0} {$i < $count} {incr i} {send -- "\033\[B"; after 70} }
+proc yes {} { global spawn_id; see "submit"; send -- "y"; after 120 }
+proc value {text} { global spawn_id; see "submit"; send -- "\025$text\r"; after 120 }
+spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/bash "$env(TUI_ROOT)/install.sh" --interactive
+stty rows 30 columns 100 < $spawn_out(slave,name)
+menu "Install folder"
+enter
+see "Install MOLT"
+yes
+see "Completed: Install MOLT"
+enter
+menu "Welcome to MOLT"
+enter
+menu "Guided setup"
+down 1
+enter
+menu "Connections"
+enter
+menu "Connection name"
+enter
+see "VM address"
+value "vm.example"
+menu "SSH username"
+enter
+menu "SSH port"
+enter
+menu "SSH authentication"
+enter
+see "Identity file"
+value "$env(TUI_TMP)/login-key"
+menu "Completed"
+enter
+see "Completed: Connect to molt-vm"
+enter
+menu "Connections"
+down 3
+enter
+see "Project folder"
+value "$env(TUI_TMP)/repos"
+menu "Completed"
+enter
+menu "Remote workspace"
+enter
+menu "Completed"
+enter
+see "Prepare VM"
+yes
+see "Completed: Prepare VM"
+enter
+see "Shell activation"
+yes
+menu "Completed"
+enter
+menu "Setup complete"
+down 1
+enter
+menu "MOLT Control Center"
+# Inspect the persisted results through the same CLI the TUI uses.
+set root [exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_ROOT]
+if {$root != "$env(TUI_TMP)/repos"} { puts stderr "FAIL: project folder was not saved"; exit 1 }
+if {![file executable "$env(MOLT_HOME)/tools/gum/gum"]} { puts stderr "FAIL: temporary bootstrap Gum was not copied into the installation"; exit 1 }
+if {![file exists "$env(TUI_TMP)/vm/molt/.install-manifest"]} { puts stderr "FAIL: VM setup did not create its owned workspace"; exit 1 }
+if {![file exists "$env(HOME)/.zshrc"]} { puts stderr "FAIL: shell activation was not installed"; exit 1 }
+down 7
+enter
+menu "Uninstall"
+enter
+see "Remove MOLT"
+yes
+see "removed local installation"
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} { puts stderr "FAIL: guided lifecycle returned $result"; exit 1 }

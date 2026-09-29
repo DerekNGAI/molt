@@ -1,0 +1,91 @@
+#!/usr/bin/expect -f
+set timeout 10
+log_user 0
+proc see {text} {
+  global spawn_id expect_out
+  expect {
+    -ex $text { return }
+    timeout { puts stderr "FAIL: TUI did not show '$text'"; exit 1 }
+    eof { puts stderr "FAIL: TUI exited before '$text'"; exit 1 }
+  }
+}
+proc menu {text} { see $text; see "submit" }
+proc enter {} { global spawn_id; send -- "\r"; after 120 }
+proc down {count} { global spawn_id; for {set i 0} {$i < $count} {incr i} { send -- "\033\[B"; after 70 } }
+proc escape {} { global spawn_id; send -- "\033"; after 250 }
+spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/bash "$env(MOLT_HOME)/bin/molt" tui
+stty rows 30 columns 100 < $spawn_out(slave,name)
+menu "Welcome to MOLT"
+down 1
+enter
+menu "MOLT Control Center"
+# Cancelling an in-flight command stops its SSH child and restores the menu.
+set marker [open "$env(TUI_TMP)/hold-ssh" w]
+close $marker
+enter
+see "Ctrl-C to cancel"
+for {set i 0} {$i < 40 && ![file exists "$env(TUI_TMP)/held.pid"]} {incr i} { after 100 }
+if {![file exists "$env(TUI_TMP)/held.pid"]} { puts stderr "FAIL: action never started"; exit 1 }
+send -- "\003"
+menu "Action failed"
+enter
+menu "MOLT Control Center"
+set record [open "$env(TUI_TMP)/held.pid" r]
+set held [string trim [read $record]]
+close $record
+if {![catch {exec kill -0 $held}]} { puts stderr "FAIL: cancelled action left its SSH child"; exit 1 }
+file delete "$env(TUI_TMP)/hold-ssh"
+# A normal action returns to the console, and Escape backs out of submenus.
+enter
+menu "Completed"
+enter
+menu "MOLT Control Center"
+down 5
+enter
+menu "Settings"
+enter
+menu "Project folder"
+escape
+menu "Settings"
+enter
+menu "Project folder"
+send -- "\025$env(TUI_TMP)/repos\r"
+menu "Completed"
+enter
+menu "Settings"
+escape
+menu "MOLT Control Center"
+stty rows 24 columns 80 < $spawn_out(slave,name)
+# Failed SSH does not terminate the project manager.
+down 1
+enter
+menu "Projects"
+enter
+menu "app"
+enter
+see "Connect to"
+see "failed"
+enter
+menu "app"
+escape
+menu "Projects"
+escape
+menu "MOLT Control Center"
+# Deletion requires a confirmation, and cancellation keeps the installation.
+down 7
+enter
+menu "Uninstall"
+escape
+menu "MOLT Control Center"
+down 7
+enter
+menu "Uninstall"
+enter
+see "Remove MOLT"
+see "submit"
+send -- "\033\[D"
+enter
+see "removed local installation"
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} { puts stderr "FAIL: TUI uninstall returned $result\n$expect_out(buffer)"; exit 1 }

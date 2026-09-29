@@ -8,6 +8,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/zsh"
 export HOME="$TMP/home" ZDOTDIR="$TMP/zsh" PATH="$TMP/bin:/usr/bin:/bin"
 export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/opencode"
+export MOLT_GUM_BINARY="$TMP/bin/gum"
 
 cat >"$TMP/bin/mutagen" <<'TOOL'
 #!/usr/bin/env bash
@@ -41,6 +42,10 @@ cat >"$TMP/bin/opencode" <<'TOOL'
 if [[ "$*" == --version ]]; then printf '1.18.33\n';
 elif [[ "$*" == --hold ]]; then sleep 60 & wait;
 else env; fi
+TOOL
+cat >"$TMP/bin/gum" <<'TOOL'
+#!/usr/bin/env bash
+printf 'gum version v2.0.2 (test)\n'
 TOOL
 cat >"$TMP/bin/ssh" <<'TOOL'
 #!/usr/bin/env bash
@@ -331,6 +336,14 @@ REALPATH
   local id state
   id="$("$MOLT_HOME/bin/molt" project-id "$TMP/remote-repo")"
   state="$MOLT_HOME/projects/$id"
+  "$MOLT_HOME/bin/molt" remote-oc "@$id" auth list
+  [[ "$("$MOLT_HOME/bin/molt" server-config "@$id" get)" == '{}' ]] || fail 'server configuration could not be read'
+  printf '{"model":"provider/test-model"}\n' >"$TMP/server.json"
+  "$MOLT_HOME/bin/molt" server-config "@$id" set "$TMP/server.json"
+  cmp -s "$TMP/server.json" "$TEST_REMOTE_HOME/molt/config/opencode/opencode.json" || fail 'server configuration was not uploaded'
+  printf 'invalid JSON\n' >"$TMP/server-invalid.json"
+  if "$MOLT_HOME/bin/molt" server-config "@$id" set "$TMP/server-invalid.json"; then fail 'accepted invalid server configuration'; fi
+  cmp -s "$TMP/server.json" "$TEST_REMOTE_HOME/molt/config/opencode/opencode.json" || fail 'invalid server configuration replaced the working file'
   [[ -f "$TEST_REMOTE_HOME/molt/meta/$id/env/devenv.nix" ]] || fail 'generated environment is not contained'
   export FAIL_SYNC=1
   if MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset --all; then fail 'sync failure succeeded'; fi
@@ -373,7 +386,127 @@ REALPATH
   absent "$TEST_DOCKER/image"
 )
 
-for test in ${*:-test_contained_install test_path_safety test_failed_install_and_upgrade test_checksum_failure_and_interrupted_install test_literal_paths test_install_lock_and_tool_repair test_failed_commit_restores_release test_containment_rejects_symlinks test_local_down_stops_clients test_legacy_shell_migration test_offline_uninstall test_remote_lifecycle}; do
+test_managed_access() (
+  export MOLT_HOME="$HOME/managed-access" TEST_REMOTE_HOME="$TMP/access-vm"
+  mkdir -p "$TEST_REMOTE_HOME/.ssh" "$TMP/access-bin"
+  printf 'external-key\n' >"$TEST_REMOTE_HOME/.ssh/authorized_keys"
+  cat >"$TMP/access-bin/ssh" <<'SSH'
+#!/usr/bin/env bash
+[[ "${FAIL_ACCESS:-0}" == 0 ]] || exit 255
+for arg in "$@"; do [[ "$arg" != -O ]] || exit 0; done
+HOME="$TEST_REMOTE_HOME" /bin/bash -c "${!#}"
+SSH
+  chmod +x "$TMP/access-bin/ssh"
+  export PATH="$TMP/access-bin:$PATH"
+  install
+  "$MOLT_HOME/bin/molt" connection add dev vm.example ubuntu 22 ''
+  printf '\n\n' | "$MOLT_HOME/bin/molt" connection keygen dev >/dev/null
+  "$MOLT_HOME/bin/molt" connection authorize dev
+  "$MOLT_HOME/bin/molt" connection authorize dev
+  [[ "$(wc -l <"$TEST_REMOTE_HOME/.ssh/authorized_keys" | tr -d ' ')" == 2 ]] || fail 'key authorization is not idempotent'
+  contains "molt:$(molt_id_from_manifest):dev" "$TEST_REMOTE_HOME/.ssh/authorized_keys"
+  rm -f "$MOLT_HOME/state/ssh/keys/dev.pub"
+  export FAIL_ACCESS=1
+  if "$MOLT_HOME/bin/molt-uninstall" --yes; then fail 'offline key cleanup discarded its credentials'; fi
+  [[ -f "$MOLT_HOME/state/ssh/profiles/dev/authorized" ]] || fail 'lost key cleanup records'
+  "$MOLT_HOME/bin/molt" cleanup-inventory >"$TMP/access-inventory"
+  contains vm.example "$TMP/access-inventory"
+  export FAIL_ACCESS=0
+  "$MOLT_HOME/bin/molt-uninstall" --yes
+  [[ "$(cat "$TEST_REMOTE_HOME/.ssh/authorized_keys")" == external-key ]] || fail 'key cleanup changed external authorization'
+)
+
+molt_id_from_manifest() { awk -F= '$1=="INSTALL_ID" {print $2}' "$MOLT_HOME/.install-manifest"; }
+
+test_vm_preparation() (
+  export MOLT_HOME="$HOME/preparation" TEST_REMOTE_HOME="$TMP/prepared-vm" TEST_ROOT="$ROOT" TEST_VM_BIN="$TMP/prepare-bin"
+  mkdir -p "$TEST_REMOTE_HOME" "$TEST_VM_BIN"
+  cat >"$TEST_VM_BIN/ssh" <<'SSH'
+#!/usr/bin/env bash
+for arg in "$@"; do [[ "$arg" != -O ]] || exit 0; done
+HOME="$TEST_REMOTE_HOME" /bin/bash -c "${!#}"
+SSH
+  cat >"$TEST_VM_BIN/realpath" <<'REALPATH'
+#!/usr/bin/env bash
+source "$TEST_ROOT/bin/_molt.sh"
+[[ "${1:-}" != -m ]] || shift
+[[ "${1:-}" != -- ]] || shift
+molt_canonical "$1"
+REALPATH
+  cat >"$TEST_VM_BIN/awk" <<'AWK'
+#!/usr/bin/env bash
+if [[ "${!#}" == /etc/os-release ]]; then printf 'ubuntu\n'; else exec /usr/bin/awk "$@"; fi
+AWK
+  cat >"$TEST_VM_BIN/id" <<'ID'
+#!/usr/bin/env bash
+case "$*" in
+  -u) printf '501\n' ;;
+  -un) printf 'ubuntu\n' ;;
+  '-nG ubuntu') if [[ -f "$TEST_REMOTE_HOME/group" ]]; then printf 'staff docker\n'; else printf 'staff\n'; fi ;;
+  *) exec /usr/bin/id "$@" ;;
+esac
+ID
+  cat >"$TEST_VM_BIN/sudo" <<'SUDO'
+#!/usr/bin/env bash
+[[ "$1" != -- ]] || shift
+exec "$@"
+SUDO
+  cat >"$TEST_VM_BIN/apt-get" <<'APT'
+#!/usr/bin/env bash
+[[ "${FAIL_APT:-0}" == 0 ]] || exit 1
+printf '%s\n' "$*" >>"$TEST_REMOTE_HOME/packages.log"
+if [[ "$1" == install ]]; then cp "$TEST_VM_BIN/docker.template" "$TEST_VM_BIN/docker";
+elif [[ "$1" == remove ]]; then rm -f "$TEST_VM_BIN/docker"; fi
+APT
+  cat >"$TEST_VM_BIN/docker.template" <<'DOCKER'
+#!/usr/bin/env bash
+case "$1 ${2:-}" in
+  'info '*) [[ -f "$TEST_REMOTE_HOME/group" ]] ;;
+  'container ls'*) [[ "${FOREIGN_CONTAINER:-0}" == 0 ]] || printf 'external-container\n' ;;
+  'volume ls'*) ;;
+  *) exit 2 ;;
+esac
+DOCKER
+  cat >"$TEST_VM_BIN/systemctl" <<'SERVICE'
+#!/usr/bin/env bash
+if [[ "$1" == is-active ]]; then exit 1; fi
+SERVICE
+  cat >"$TEST_VM_BIN/usermod" <<'GROUP'
+#!/usr/bin/env bash
+touch "$TEST_REMOTE_HOME/group"
+GROUP
+  cat >"$TEST_VM_BIN/gpasswd" <<'GROUP'
+#!/usr/bin/env bash
+rm -f "$TEST_REMOTE_HOME/group"
+GROUP
+  chmod +x "$TEST_VM_BIN/"*
+  export PATH="$TEST_VM_BIN:$PATH"
+  install
+  "$MOLT_HOME/bin/molt" config set MOLT_REMOTE_HOME "$TEST_REMOTE_HOME"
+  if "$MOLT_HOME/bin/molt" bootstrap; then fail 'accepted the VM home as the workspace'; fi
+  for record in "$MOLT_HOME/state/remotes"/*/host; do [[ ! -f "$record" ]] || fail 'invalid workspace stranded a cleanup record'; done
+  "$MOLT_HOME/bin/molt" config set MOLT_REMOTE_HOME '$HOME/molt'
+  export FAIL_APT=1
+  if "$MOLT_HOME/bin/molt" bootstrap; then fail 'failed package installation succeeded'; fi
+  "$MOLT_HOME/bin/molt-uninstall" --yes || fail 'could not uninstall after failed Docker preparation'
+  absent "$TEST_REMOTE_HOME/molt"
+  export FAIL_APT=0
+  install
+  "$MOLT_HOME/bin/molt" bootstrap
+  [[ -f "$TEST_REMOTE_HOME/molt/.install-manifest" && -f "$TEST_REMOTE_HOME/group" ]] || fail 'VM was not prepared'
+  "$MOLT_HOME/bin/molt" bootstrap
+  [[ "$(grep -c '^install ' "$TEST_REMOTE_HOME/packages.log")" == 1 ]] || fail 'Docker preparation reinstalled existing packages'
+  export FOREIGN_CONTAINER=1
+  if "$MOLT_HOME/bin/molt" unprepare-vm; then fail 'removed Docker while external containers remained'; fi
+  [[ -x "$TEST_VM_BIN/docker" && -f "$TEST_REMOTE_HOME/group" ]] || fail 'failed VM cleanup removed dependencies'
+  export FOREIGN_CONTAINER=0
+  "$MOLT_HOME/bin/molt-uninstall" --yes --undo-vm
+  absent "$TEST_REMOTE_HOME/molt"
+  absent "$TEST_REMOTE_HOME/group"
+  absent "$TEST_VM_BIN/docker"
+)
+
+for test in ${*:-test_contained_install test_path_safety test_failed_install_and_upgrade test_checksum_failure_and_interrupted_install test_literal_paths test_install_lock_and_tool_repair test_failed_commit_restores_release test_containment_rejects_symlinks test_local_down_stops_clients test_legacy_shell_migration test_offline_uninstall test_remote_lifecycle test_managed_access test_vm_preparation}; do
   "$test"
   printf 'PASS: %s\n' "$test"
 done

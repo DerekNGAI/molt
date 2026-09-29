@@ -69,6 +69,10 @@ canonical_path() {
 
 repo_root() {
   local path="${1:-.}"
+  if [[ "$path" == @* ]]; then
+    [[ "${path#@}" =~ ^[a-f0-9]{12}$ ]] || die 'invalid project identity'
+    path="$(read_value "$MOLT_PROJECTS_HOME/${path#@}/path")" || die 'project is not registered'
+  fi
   path="$(canonical_path "$path")"
   git -C "$path" rev-parse --show-toplevel 2>/dev/null || die "not a Git repository: $path"
 }
@@ -162,6 +166,11 @@ load_project_state() {
 
 load_project() {
   local path="${1:-.}" state
+  if [[ "$path" == @* ]]; then
+    [[ "${path#@}" =~ ^[a-f0-9]{12}$ ]] || die 'invalid project identity'
+    load_project_state "$MOLT_PROJECTS_HOME/${path#@}"
+    return
+  fi
   path="$(repo_root "$path")"
   state="$(project_state_dir "$path")"
   load_project_state "$state"
@@ -307,6 +316,7 @@ cmd_setup() {
   ssh_up
   home="$(remote_home)"
   root="$(expand_remote_path "${PROJECT_REMOTE_HOME:-$MOLT_REMOTE_HOME}" "$home")"
+  root="$(remote_script validate-root "$root" "$MOLT_INSTALL_ID")" || die 'invalid remote workspace; configuration can be corrected before retrying'
   record="$MOLT_HOME/state/remotes/$(molt_host_key "$MOLT_HOST")"
   if [[ -f "$record/root" && "$(read_value "$record/root")" != "$root" ]]; then
     die 'remote root changed; clean up the recorded root before selecting another'
@@ -742,13 +752,19 @@ watch_and_forward() {
 }
 
 cmd_run() {
-  local current path container_path command tmp watcher rc docker_flags ssh_flags
+  local current path
   [[ $# -gt 0 ]] || die "molt run <command> [args...]"
   if [[ "${MOLT_LOCAL:-0}" == 1 ]]; then exec "$@"; fi
   current="$(canonical_path "$(pwd)")"
   path="$(find_project_for_path "$current")" || die "project is not registered; run molt or molt start"
   load_project "$(read_value "$path/path")"
   [[ "$PROJECT_ACTIVE" == 1 ]] || die "project is stopped; run molt start"
+  run_loaded_project "$current" "$@"
+}
+
+run_loaded_project() {
+  local current="$1" container_path command tmp watcher rc docker_flags ssh_flags
+  shift
   ensure_project_container
   container_path="$(container_path_for_pwd "$current")"
   command="$(quote_remote "$@")"
@@ -815,6 +831,10 @@ cmd_client() {
 cmd_oc() {
   local current="$(canonical_path "$(pwd)")" real
   load_project "$current" || die "project is not registered; run molt start"
+  attach_loaded_project "$@"
+}
+
+attach_loaded_project() {
   [[ "$PROJECT_ACTIVE" == 1 ]] || die "project is stopped; run molt start"
   ensure_project_container
   sync_password
@@ -830,7 +850,7 @@ cmd_status() {
   for state in "$MOLT_PROJECTS_HOME"/*/path; do
     [[ -f "$state" ]] || continue
     path="$(read_value "$state")"
-    load_project "$path"
+    load_project_state "$(dirname "$state")"
     active="${PROJECT_ACTIVE:-0}"
     running="unknown"
     if [[ "$active" == 1 ]] && ssh_ok; then
@@ -853,11 +873,11 @@ cmd_doctor() {
     if ssh_up && remote_run 'command -v docker >/dev/null && docker info >/dev/null 2>&1'; then
       printf 'ok   %s Docker\n' "$MOLT_HOST"
     else
-      printf 'miss %s Docker (run molt setup)\n' "$MOLT_HOST"
+      printf 'miss %s Docker (choose Prepare VM in the console)\n' "$MOLT_HOST"
       failed=1
     fi
   else
-    printf 'miss %s SSH (check ~/.ssh/config)\n' "$MOLT_HOST"
+    printf 'miss %s SSH (configure or test its connection in the console)\n' "$MOLT_HOST"
     failed=1
   fi
   return "$failed"
@@ -975,8 +995,8 @@ cmd_reset() {
     return 0
   fi
 
-  local path="$(repo_root "${1:-.}")" answer
-  load_project "$path" || return 0
+  local answer
+  load_project "${1:-.}" || return 0
   if [[ "${MOLT_ASSUME_YES:-0}" == 1 ]]; then
     answer=y
   else
@@ -988,67 +1008,33 @@ cmd_reset() {
 }
 
 cmd_tui() {
-  local root selection action repo answer saved_root
-  local -a repos
-  saved_root="$(read_value "$MOLT_HOME/root" 2>/dev/null || printf '%s' '')"
-  root="${1:-${saved_root:-$MOLT_ROOT}}"
-  printf 'Project root [%s]: ' "$root"
-  read -r answer
-  [[ -n "$answer" ]] && root="$answer"
-  [[ -d "$root" ]] || die "directory not found: $root"
-  write_value "$MOLT_HOME/root" "$(canonical_path "$root")"
-
-  while :; do
-    repos=()
-    while IFS= read -r repo; do repos[${#repos[@]}]="$repo"; done < <(cmd_scan "$root")
-    printf '\nMolt projects under %s\n\n' "$(canonical_path "$root")"
-    if [[ ${#repos[@]} -eq 0 ]]; then
-      printf 'No Git repositories found.\n'
-      return 0
-    fi
-    local index=0 runtime environment
-    for repo in "${repos[@]}"; do
-      index=$((index + 1))
-      runtime="$(detect_runtime "$repo")"
-      if [[ -f "$repo/devenv.nix" ]]; then environment=devenv; else environment='devenv missing'; fi
-      printf '%2d) %s [%s, %s]\n' "$index" "$repo" "$runtime" "$environment"
-    done
-    printf 'Select a repository, or q to quit: '
-    read -r selection
-    [[ "$selection" == q || "$selection" == Q ]] && return 0
-    [[ "$selection" =~ ^[0-9]+$ ]] || continue
-    (( selection >= 1 && selection <= ${#repos[@]} )) || continue
-    repo="${repos[$((selection - 1))]}"
-
-    while :; do
-      printf '\n%s\n' "$repo"
-      printf '1) start  2) stop  3) inspect  4) review/commit devenv  5) logs  6) back\n'
-      printf 'Action: '
-      read -r action
-      case "$action" in
-        1)
-          cmd_start "$repo"
-          ;;
-        2) cmd_stop_project "$repo" ;;
-        3) cmd_inspect "$repo" ;;
-        4) commit_generated_env "$repo" ;;
-        5) cmd_logs "$repo" ;;
-        6) break ;;
-      esac
-    done
-  done
+  [[ -t 0 && -t 1 ]] || die 'the control center needs an interactive terminal'
+  if [[ ! -f "$MOLT_HOME/.install-manifest" ]]; then
+    [[ -f "$SCRIPT_DIR/../install.sh" ]] || die 'run install.sh from the MOLT checkout first'
+    exec /bin/bash "$SCRIPT_DIR/../install.sh" --interactive
+  fi
+  molt_owned_home || die 'not an owned installation'
+  [[ $# == 0 ]] || cmd_config set MOLT_ROOT "$1"
+  source "$SCRIPT_DIR/_tui.sh"
+  tui_main
 }
 
 usage() {
   cat <<USAGE
 molt — local shell, remote project environments
 
-  molt                         open the project TUI
-  molt tui [root]              scan and manage repositories
+  molt                         open the local control center
+  molt tui [root]              setup, projects, connections, settings, uninstall
   molt scan [root]             print Git repositories under root
   molt inspect [repo]          detect runtime and environment files
   molt generate-env [repo]     create a minimal devenv.nix locally
   molt setup                   check Docker and prepare the owned VM root
+  molt bootstrap               install missing Docker and configure VM access
+  molt config [show|get|set]    manage installation settings
+  molt connection [action]     manage private SSH profiles and dedicated keys
+  molt shell [action]          manage optional Zsh activation
+  molt ports <repo> "<ports>"  save and apply project ports
+  molt tools                   show dependency locations and versions
   molt register [repo]         register a repository locally
   molt start [repo]            sync, build, and start its VM container
   molt stop [repo]             stop its VM container and sync
@@ -1065,6 +1051,7 @@ molt — local shell, remote project environments
   molt reset [repo]            remove remote and local project molt state
   molt reset --all             remove all remote and local project state
   molt remove-remote-roots     remove empty molt directories on the VM
+  molt unprepare-vm            undo recorded Docker preparation on empty daemons
 
   MOLT_LOCAL=1 <command>       force a command to run on the Mac
   MOLT_REMOTE_ALL=1 <command> route every supported shim command remotely
@@ -1085,6 +1072,8 @@ main() {
       if project_active_for_path "${1:-.}" && command_is_remote "${2:-}" "${@:3}"; then printf 'remote\n'; else printf 'local\n'; fi
       ;;
     setup) cmd_setup "$@" ;;
+    bootstrap) cmd_bootstrap "$@" ;;
+    unprepare-vm) cmd_unprepare_vm "$@" ;;
     register) cmd_register "$@" ;;
     start) cmd_start "$@" ;;
     stop) cmd_stop_project "$@" ;;
@@ -1094,9 +1083,19 @@ main() {
     down) cmd_down "$@" ;;
     status) cmd_status "$@" ;;
     doctor) cmd_doctor "$@" ;;
+    config) cmd_config "$@" ;;
+    connection) cmd_connection "$@" ;;
+    shell) cmd_shell "$@" ;;
+    ports) cmd_ports "$@" ;;
+    tools) cmd_tools ;;
+    ui-action) cmd_ui_action "$@" ;;
+    remote-oc) cmd_remote_oc "$@" ;;
+    project-shell) cmd_project_shell "$@" ;;
+    server-config) cmd_server_config "$@" ;;
     run) cmd_run "$@" ;;
-    ssh) ssh_up; exec ssh "$MOLT_HOST" "$@" ;;
+    ssh) ssh_up; ssh "$MOLT_HOST" "$@" ;;
     oc|opencode) cmd_oc "$@" ;;
+    oc-project) load_project "$1" || die 'project is not registered'; shift; attach_loaded_project --dir /workspace "$@" ;;
     client) cmd_client "$@" ;;
     cleanup-inventory)
       for state in "$MOLT_PROJECTS_HOME"/*/path; do
@@ -1107,6 +1106,15 @@ main() {
       for state in "$MOLT_HOME/state/remotes"/*/host; do
         [[ -f "$state" ]] || continue
         printf 'Remote host: %s\n  root: %s\n' "$(read_value "$state")" "$(read_value "$(dirname "$state")/root")"
+      done
+      for state in "$MOLT_HOME/state/ssh/profiles"/*/hostname; do
+        [[ -f "$state" ]] || continue
+        profile="${state%/*}"
+        printf 'SSH connection %s: %s@%s:%s\n  identity: %s\n' "$(basename "$profile")" "$(read_value "$profile/user")" "$(read_value "$profile/hostname")" "$(read_value "$profile/port")" "$(read_value "$profile/identity")"
+        if [[ -f "$profile/authorized" ]]; then
+          printf '  Dedicated public key left on this host by local-only removal:\n'
+          read_value "$profile/authorized"
+        fi
       done
       ;;
     local-down)
@@ -1138,4 +1146,5 @@ command_is_remote() {
   esac
 }
 
+source "$SCRIPT_DIR/_manage.sh"
 main "$@"

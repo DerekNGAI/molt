@@ -5,17 +5,19 @@ if [[ -f "$SCRIPT_DIR/_molt.sh" ]]; then source "$SCRIPT_DIR/_molt.sh";
 else source "$SCRIPT_DIR/bin/_molt.sh"; fi
 if [[ -f "${SCRIPT_DIR%/*}/.install-manifest" ]]; then MOLT_HOME="${MOLT_HOME:-${SCRIPT_DIR%/*}}";
 else MOLT_HOME="${MOLT_HOME:-$HOME/.molt}"; fi
-YES=0; LOCAL_ONLY=0
+YES=0; LOCAL_ONLY=0; UNDO_VM=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --yes|-y) YES=1 ;;
     --local-only) LOCAL_ONLY=1 ;;
+    --undo-vm) UNDO_VM=1 ;;
     --help|-h)
-      printf 'molt-uninstall [--yes] [--local-only]\n\nDefault: remove owned remote and local resources; keep records if cleanup fails.\n--local-only: remove this Mac installation, leaving remote resources.\n'; exit 0 ;;
+      printf 'molt-uninstall [--yes] [--local-only|--undo-vm]\n\nDefault: remove owned remote and local resources; keep records if cleanup fails.\n--local-only: remove this Mac installation, leaving remote resources.\n--undo-vm: also undo recorded Docker installation/user access when the daemon has no containers or volumes.\n'; exit 0 ;;
     *) molt_error "unknown option: $1"; exit 2 ;;
   esac
   shift
 done
+[[ "$LOCAL_ONLY" == 0 || "$UNDO_VM" == 0 ]] || { molt_error '--local-only and --undo-vm cannot be combined'; exit 2; }
 molt_safe_home || exit 1
 [[ -e "$MOLT_HOME" ]] || { printf 'molt: already removed\n'; exit 0; }
 molt_owned_home || exit 1
@@ -33,10 +35,17 @@ else
   MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset --all || {
     molt_error 'cleanup failed; installation and retry records preserved'; exit 1;
   }
+  if [[ "$UNDO_VM" == 1 ]]; then
+    "$MOLT_HOME/bin/molt" unprepare-vm || { molt_error 'VM preparation cleanup failed; installation retained'; exit 1; }
+  fi
   "$MOLT_HOME/bin/molt" remove-remote-roots || {
     molt_error 'remote root cleanup failed; retry records preserved'; exit 1;
   }
+  "$MOLT_HOME/bin/molt" connection cleanup || {
+    molt_error 'dedicated SSH key cleanup failed; installation and credentials retained'; exit 1;
+  }
 fi
+"$MOLT_HOME/bin/molt" shell disable || { molt_error 'shell activation cleanup failed; installation retained'; exit 1; }
 "$MOLT_HOME/bin/molt" local-down || { molt_error 'could not stop owned local processes'; exit 1; }
 if [[ -f "$MOLT_HOME/legacy-install-manifest" ]]; then
   molt_remove_legacy_shell "$MOLT_HOME/legacy-install-manifest"
