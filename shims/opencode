@@ -7,8 +7,4 @@ source "$HERE/_lib.sh"
 if should_remote opencode; then
   exec "$(molt_bin)" oc "$@"
 fi
-if [[ "${MOLT_LOCAL:-0}" == "1" || "${MOLT_REMOTE_ALL:-0}" != "1" ]]; then
-  REAL="$(real_bin opencode)" || { echo "opencode not found on Mac" >&2; exit 127; }
-  exec "$REAL" "$@"
-fi
-exec "$(molt_bin)" oc "$@"
+exec "$(molt_bin)" client "$@"

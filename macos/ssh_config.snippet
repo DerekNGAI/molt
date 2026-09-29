@@ -1,17 +1,11 @@
 # Append to ~/.ssh/config
 #
 # HostName can be a public IP or a Tailscale MagicDNS name.
-# Do not LocalForward app ports here. molt adds them on demand via
-# `ssh -O forward` on this ControlMaster connection.
+# molt supplies its own connection-sharing, known-hosts, and port-forwarding
+# settings, with all state inside MOLT_HOME.
 
 Host oci-dev
   HostName REPLACE_ME
   User ubuntu
   IdentityFile ~/.ssh/oci_dev
   IdentitiesOnly yes
-  ControlMaster auto
-  ControlPath ~/.ssh/cm-%r@%h:%p
-  ControlPersist 12h
-  ServerAliveInterval 30
-  ServerAliveCountMax 4
-  ExitOnForwardFailure no

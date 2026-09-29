@@ -1,109 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-MOLT_HOME="${MOLT_HOME:-$HOME/.molt}"
-MANIFEST="$MOLT_HOME/.install-manifest"
-YES=0
-
-usage() {
-  cat <<USAGE
-molt-uninstall — remove molt from this Mac
-
-  molt-uninstall          ask before removing molt
-  molt-uninstall --yes    remove molt without prompting
-USAGE
-}
-
-die() {
-  printf 'molt: %s\n' "$*" >&2
-  exit 1
-}
-
-manifest_value() {
-  local key="$1"
-  [[ -f "$MANIFEST" ]] || return 1
-  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$MANIFEST"
-}
-
-remove_path_entry() {
-  local zshrc="$1" molt_home_line="$2" path_line="$3" created="$4" tmp mode
-  [[ -f "$zshrc" ]] || return 0
-
-  tmp="$(mktemp "${TMPDIR:-/tmp}/molt-zshrc.XXXXXX")"
-  if ! awk -v molt_home_line="$molt_home_line" -v path_line="$path_line" '
-    { lines[NR] = $0 }
-    END {
-      for (i = 1; i <= NR; i++) {
-        if (lines[i] == path_line || (molt_home_line != "" && lines[i] == molt_home_line)) {
-          removed[i] = 1
-          if (lines[i] == molt_home_line && i > 1 && lines[i - 1] == "# molt") {
-            removed[i - 1] = 1
-            if (i > 2 && lines[i - 2] == "") removed[i - 2] = 1
-          }
-        }
-      }
-      for (i = 1; i <= NR; i++) if (!removed[i]) print lines[i]
-    }
-  ' "$zshrc" >"$tmp"; then
-    rm -f "$tmp"
-    return 1
-  fi
-  mode="$(stat -f '%Lp' "$zshrc" 2>/dev/null || printf '644')"
-  if ! chmod "$mode" "$tmp" || ! mv "$tmp" "$zshrc"; then
-    rm -f "$tmp"
-    return 1
-  fi
-
-  if [[ "$created" == 1 ]] && [[ -z "$(tr -d '[:space:]' <"$zshrc")" ]]; then
-    rm -f "$zshrc"
-  fi
-}
-
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$SCRIPT_DIR/_molt.sh" ]]; then source "$SCRIPT_DIR/_molt.sh";
+else source "$SCRIPT_DIR/bin/_molt.sh"; fi
+if [[ -f "${SCRIPT_DIR%/*}/.install-manifest" ]]; then MOLT_HOME="${MOLT_HOME:-${SCRIPT_DIR%/*}}";
+else MOLT_HOME="${MOLT_HOME:-$HOME/.molt}"; fi
+YES=0; LOCAL_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --yes|-y) YES=1 ;;
-    --help|-h) usage; exit 0 ;;
-    *) usage >&2; exit 2 ;;
+    --local-only) LOCAL_ONLY=1 ;;
+    --help|-h)
+      printf 'molt-uninstall [--yes] [--local-only]\n\nDefault: remove owned remote and local resources; keep records if cleanup fails.\n--local-only: remove this Mac installation, leaving remote resources.\n'; exit 0 ;;
+    *) molt_error "unknown option: $1"; exit 2 ;;
   esac
   shift
 done
-
-[[ "$MOLT_HOME" != "$HOME" && "$MOLT_HOME" != / ]] || die "refusing to remove MOLT_HOME=$MOLT_HOME"
-
-if [[ "$YES" != 1 ]]; then
-  printf 'Remove molt, its local state, and dependencies installed by molt? [y/N] '
+molt_safe_home || exit 1
+[[ -e "$MOLT_HOME" ]] || { printf 'molt: already removed\n'; exit 0; }
+molt_owned_home || exit 1
+if [[ "$YES" == 0 ]]; then
+  printf 'Remove molt%s? [y/N] ' "$(if [[ "$LOCAL_ONLY" == 1 ]]; then printf ' locally, leaving remote resources'; else printf ' and its owned remote resources'; fi)"
   read -r answer
   [[ "$answer" == y || "$answer" == Y ]] || exit 0
 fi
-
-if [[ -x "$MOLT_HOME/bin/molt" ]]; then
-  MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset --all
-  "$MOLT_HOME/bin/molt" remove-remote-roots
-  "$MOLT_HOME/bin/molt" down || true
+export MOLT_HOME
+if [[ "$LOCAL_ONLY" == 1 ]]; then
+  printf 'Remote resources left for manual cleanup:\n'
+  "$MOLT_HOME/bin/molt" cleanup-inventory
+else
+  "$MOLT_HOME/bin/molt" local-down || exit 1
+  MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset --all || {
+    molt_error 'cleanup failed; installation and retry records preserved'; exit 1;
+  }
+  "$MOLT_HOME/bin/molt" remove-remote-roots || {
+    molt_error 'remote root cleanup failed; retry records preserved'; exit 1;
+  }
 fi
-
-ZSHRC="$(manifest_value ZSHRC 2>/dev/null || printf '%s' "${ZDOTDIR:-$HOME}/.zshrc")"
-MOLT_HOME_LINE="$(manifest_value MOLT_HOME_LINE 2>/dev/null || printf '%s' '')"
-PATH_LINE="$(manifest_value PATH_LINE 2>/dev/null || printf '%s' 'export PATH="$HOME/.molt/shims:$HOME/.molt/bin:$HOME/.opencode/bin:$PATH"')"
-ZSHRC_CREATED="$(manifest_value ZSHRC_CREATED 2>/dev/null || printf '0')"
-PATH_ADDED="$(manifest_value PATH_ADDED 2>/dev/null || printf '0')"
-MUTAGEN_INSTALLED="$(manifest_value MUTAGEN_INSTALLED 2>/dev/null || printf '0')"
-OPENCODE_INSTALLED="$(manifest_value OPENCODE_INSTALLED 2>/dev/null || printf '0')"
-
-if [[ "$PATH_ADDED" == 1 ]]; then
-  remove_path_entry "$ZSHRC" "$MOLT_HOME_LINE" "$PATH_LINE" "$ZSHRC_CREATED"
+"$MOLT_HOME/bin/molt" local-down || { molt_error 'could not stop owned local processes'; exit 1; }
+if [[ -f "$MOLT_HOME/legacy-install-manifest" ]]; then
+  molt_remove_legacy_shell "$MOLT_HOME/legacy-install-manifest"
+  molt_error 'legacy shared dependencies, SSH entries, and shared tool state are preserved'
 fi
-
-if [[ "$MUTAGEN_INSTALLED" == 1 ]]; then
-  command -v mutagen >/dev/null 2>&1 && mutagen daemon stop >/dev/null 2>&1 || true
-  command -v brew >/dev/null 2>&1 && brew uninstall mutagen >/dev/null 2>&1 || true
-fi
-
-if [[ "$OPENCODE_INSTALLED" == 1 ]]; then
-  rm -f "$HOME/.opencode/bin/opencode"
-  rmdir "$HOME/.opencode/bin" 2>/dev/null || true
-  rmdir "$HOME/.opencode" 2>/dev/null || true
-fi
-
-rm -rf "$MOLT_HOME"
+molt_owned_home || exit 1
+rm -rf -- "$MOLT_HOME"
 printf 'molt: removed local installation\n'

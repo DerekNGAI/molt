@@ -1,108 +1,203 @@
 #!/usr/bin/env bash
-# Install onto this Mac: ~/.molt/{bin,shims,config}
+# Install a private, session-activated molt installation.
 set -euo pipefail
-
-die() {
-  printf 'molt: %s\n' "$*" >&2
-  exit 1
+umask 077
+SRC="$(cd "$(dirname "$0")" && pwd -P)"
+source "$SRC/bin/_molt.sh"
+MOLT_HOME="${MOLT_HOME:-$HOME/.molt}"
+molt_safe_home || exit 1
+[[ "$MOLT_HOME" != "$SRC" && "$MOLT_HOME" != "$SRC/"* && "$SRC" != "$MOLT_HOME/"* ]] || {
+  molt_error 'MOLT_HOME must not overlap the source checkout'; exit 1;
 }
 
-manifest_value() {
-  local key="$1"
-  [[ -f "$MANIFEST" ]] || return 1
-  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$MANIFEST"
+FRESH=0; LEGACY=0; STAGE=""; SWITCHED=0; COMMITTED=0; LEGACY_MOVED=0
+OLD_CURRENT="$(readlink "$MOLT_HOME/current" 2>/dev/null || true)"
+LOCKED=0; LOCK="$MOLT_HOME/state/install.lock"
+MANIFEST="$MOLT_HOME/.install-manifest"
+if [[ -f "$MANIFEST" ]]; then
+  if [[ "$(molt_value "$MANIFEST" FORMAT 2>/dev/null || true)" == 2 ]]; then
+    molt_owned_home || exit 1
+  else
+    [[ ! -L "$MANIFEST" && -d "$MOLT_HOME/bin" && -d "$MOLT_HOME/shims" ]] &&
+      molt_value "$MANIFEST" ZSHRC >/dev/null && molt_value "$MANIFEST" PATH_ADDED >/dev/null || {
+        molt_error 'unrecognized installation manifest'; exit 1;
+      }
+    LEGACY=1
+    MOLT_INSTALL_ID="$(molt_id)"
+  fi
+elif [[ -d "$MOLT_HOME" && -n "$(ls -A "$MOLT_HOME")" ]]; then
+  molt_error "refusing populated, unowned directory: $MOLT_HOME"; exit 1
+else
+  FRESH=1
+  MOLT_INSTALL_ID="$(molt_id)"
+fi
+
+cleanup_install() {
+  local rc=$? recovery=0
+  trap - EXIT
+  if [[ "$COMMITTED" == 0 ]]; then
+    if [[ "$SWITCHED" == 1 && -n "$OLD_CURRENT" ]]; then
+      ln -s "$OLD_CURRENT" "$MOLT_HOME/current.restore" &&
+        mv -fh "$MOLT_HOME/current.restore" "$MOLT_HOME/current" || recovery=1
+    elif [[ "$SWITCHED" == 1 ]]; then
+      rm -f "$MOLT_HOME/current" || recovery=1
+    fi
+    if [[ -n "$STAGE" && -f "$STAGE/previous.manifest" ]]; then
+      mv -f "$STAGE/previous.manifest" "$MANIFEST" || recovery=1
+    fi
+    if [[ -n "$STAGE" && -f "$STAGE/previous.activation" ]]; then
+      mv -f "$STAGE/previous.activation" "$MOLT_HOME/activate.zsh" || recovery=1
+    fi
+    if [[ "$LEGACY_MOVED" == 1 ]]; then
+      for name in bin shims; do
+        [[ ! -L "$MOLT_HOME/$name" ]] || rm -f "$MOLT_HOME/$name"
+        [[ ! -d "$MOLT_HOME/legacy-$name" ]] || mv "$MOLT_HOME/legacy-$name" "$MOLT_HOME/$name"
+      done
+    fi
+    if [[ "$recovery" == 0 ]]; then
+      [[ -z "$STAGE" ]] || rm -rf "$STAGE"
+      [[ "$FRESH" == 0 ]] || rm -rf "$MOLT_HOME"
+    else molt_error "rollback incomplete; recovery files are retained in $STAGE"; fi
+  fi
+  if [[ "$LOCKED" == 1 ]]; then rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true; fi
+  exit "$rc"
+}
+trap cleanup_install EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+molt_state
+[[ ! -L "$LOCK" ]] || { molt_error 'symlinked installation lock'; exit 1; }
+if ! mkdir "$LOCK" 2>/dev/null; then
+  previous=""
+  if [[ -f "$LOCK/pid" ]]; then IFS= read -r previous <"$LOCK/pid" || true; fi
+  [[ "$previous" =~ ^[0-9]+$ ]] && ! kill -0 "$previous" 2>/dev/null || { molt_error 'another installation is running'; exit 1; }
+  rm -f "$LOCK/pid"
+  rmdir "$LOCK"
+  mkdir "$LOCK"
+fi
+LOCKED=1
+printf '%s\n' "$$" >"$LOCK/pid"
+for name in config opencode.password; do
+  [[ ! -L "$MOLT_HOME/$name" ]] || { molt_error "symlinked $name is outside the installation contract"; exit 1; }
+done
+if [[ "$FRESH" == 1 ]]; then
+  printf 'FORMAT=2\nINSTALL_ID=%s\nROOT=%s\nSTATUS=installing\n' "$MOLT_INSTALL_ID" "$MOLT_HOME" >"$MANIFEST"
+fi
+mkdir -p "$MOLT_HOME/releases"
+[[ ! -L "$MOLT_HOME/releases" ]] || { molt_error 'symlinked releases directory'; exit 1; }
+STAGE="$(mktemp -d "$MOLT_HOME/releases/install.XXXXXX")"
+[[ ! -f "$MANIFEST" ]] || cp -p "$MANIFEST" "$STAGE/previous.manifest"
+[[ ! -f "$MOLT_HOME/activate.zsh" ]] || cp -p "$MOLT_HOME/activate.zsh" "$STAGE/previous.activation"
+mkdir -p "$STAGE/bin" "$STAGE/shims" "$STAGE/tools"
+cp -R "$SRC/bin/." "$STAGE/bin/"
+cp -R "$SRC/shims/." "$STAGE/shims/"
+cp "$SRC/uninstall.sh" "$STAGE/bin/molt-uninstall"
+cp "$SRC/tools.lock" "$STAGE/tools.lock"
+chmod +x "$STAGE/bin/"* "$STAGE/shims/"*
+mkdir -p "$STAGE/bin/transport"
+ln -s ../mutagen-transport "$STAGE/bin/transport/ssh"
+ln -s ../mutagen-transport "$STAGE/bin/transport/scp"
+
+download_tool() {
+  local name="$1" asset checksum version archive
+  case "$(uname -s)/$(uname -m)/$name" in
+    Darwin/arm64/mutagen) asset=mutagen_darwin_arm64_v0.18.1.tar.gz ;;
+    Darwin/x86_64/mutagen) asset=mutagen_darwin_amd64_v0.18.1.tar.gz ;;
+    Darwin/arm64/opencode) asset=opencode-darwin-arm64.zip ;;
+    Darwin/x86_64/opencode) asset=opencode-darwin-x64-baseline.zip ;;
+    *) molt_error 'automatic downloads support macOS arm64 and x86_64'; return 1 ;;
+  esac
+  checksum="$(awk -v asset="$asset" '$2==asset {print $1}' "$SRC/tools.lock")"
+  archive="$STAGE/$asset"
+  if [[ "$name" == mutagen ]]; then version=v0.18.1; repo=mutagen-io/mutagen;
+  else version=v1.18.33; repo=anomalyco/opencode; fi
+  curl -fsSL --retry 2 "https://github.com/$repo/releases/download/$version/$asset" -o "$archive" || return 1
+  [[ "$(shasum -a 256 "$archive" | cut -d ' ' -f1)" == "$checksum" ]] || {
+    molt_error "checksum mismatch for $asset"; return 1;
+  }
+  mkdir -p "$STAGE/tools/$name"
+  if [[ "$asset" == *.zip ]]; then unzip -q "$archive" -d "$STAGE/tools/$name";
+  else tar -xzf "$archive" -C "$STAGE/tools/$name"; fi
+  rm -f "$archive"
+  printf '%s\n' "$MOLT_HOME/tools/$name/$name"
 }
 
-write_manifest() {
-  (umask 077; cat >"$MANIFEST" <<EOF
-ZSHRC=$ZSHRC
-MOLT_HOME_LINE=$MOLT_HOME_LINE
-PATH_LINE=$PATH_LINE
-ZSHRC_CREATED=$ZSHRC_CREATED
-PATH_ADDED=$PATH_ADDED
-MUTAGEN_INSTALLED=$MUTAGEN_INSTALLED
-OPENCODE_INSTALLED=$OPENCODE_INSTALLED
+resolve_tool() {
+  local name="$1" explicit="$2" binary
+  if [[ -n "$explicit" ]]; then molt_dependency "$name" "$explicit"; return; fi
+  # Reuse an owned portable tool without depending on PATH or a command shim.
+  if [[ "$LEGACY" == 0 && -x "$MOLT_HOME/tools/$name/$name" ]]; then
+    cp -R "$MOLT_HOME/tools/$name" "$STAGE/tools/"
+    printf '%s\n' "$MOLT_HOME/tools/$name/$name"; return
+  fi
+  binary="$(molt_dependency "$name" || true)"
+  if [[ -n "$binary" ]]; then printf '%s\n' "$binary"; else download_tool "$name"; fi
+}
+MUTAGEN_BINARY="$(resolve_tool mutagen "${MOLT_MUTAGEN_BINARY:-}")"
+OPENCODE_BINARY="$(resolve_tool opencode "${MOLT_OPENCODE_BINARY:-}")"
+check_binary() {
+  local binary="$1"
+  case "$binary" in "$MOLT_HOME/tools/"*) binary="$STAGE/tools/${binary#"$MOLT_HOME/tools/"}" ;; esac
+  molt_isolated "$binary" "${@:2}"
+}
+[[ "$(check_binary "$MUTAGEN_BINARY" version)" == 0.18.1 ]] || {
+  molt_error 'Mutagen 0.18.1 is required for the contained transport'; exit 1;
+}
+[[ -n "$(check_binary "$OPENCODE_BINARY" --version)" ]] || { molt_error 'invalid OpenCode client'; exit 1; }
+
+cat >"$STAGE/manifest" <<EOF
+FORMAT=2
+INSTALL_ID=$MOLT_INSTALL_ID
+ROOT=$MOLT_HOME
+STATUS=ready
+MUTAGEN_BINARY=$MUTAGEN_BINARY
+OPENCODE_BINARY=$OPENCODE_BINARY
 EOF
-  )
-}
+# Activation derives its own path, including custom paths with spaces or quotes.
+cat >"$STAGE/activate.zsh" <<'ACTIVATE'
+export MOLT_HOME="${${(%):-%x}:A:h}"
+typeset -U path
+path=("$MOLT_HOME/shims" "$MOLT_HOME/bin" $path)
+export PATH
+ACTIVATE
 
-SRC="$(cd "$(dirname "$0")" && pwd)"
-DEST="${MOLT_HOME:-$HOME/.molt}"
-mkdir -p "$DEST"
-DEST="$(cd "$DEST" && pwd -P)"
-[[ "$DEST" != "$SRC" && "$DEST" != "$SRC/"* ]] || die "MOLT_HOME must be outside the source checkout"
-
-ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
-MOLT_HOME_LINE="export MOLT_HOME=\"$DEST\""
-PATH_LINE="export PATH=\"$DEST/shims:$DEST/bin:$HOME/.opencode/bin:\$PATH\""
-MANIFEST="$DEST/.install-manifest"
-
-ZSHRC_CREATED="$(manifest_value ZSHRC_CREATED 2>/dev/null || printf '0')"
-PATH_ADDED="$(manifest_value PATH_ADDED 2>/dev/null || printf '0')"
-MUTAGEN_INSTALLED="$(manifest_value MUTAGEN_INSTALLED 2>/dev/null || printf '0')"
-OPENCODE_INSTALLED="$(manifest_value OPENCODE_INSTALLED 2>/dev/null || printf '0')"
-
-if [[ ! -f "$ZSHRC" ]]; then
-  ZSHRC_CREATED=1
+if [[ "$LEGACY" == 1 ]]; then
+  cp "$MANIFEST" "$MOLT_HOME/legacy-install-manifest"
+  # Legacy binaries remain available if a migration is interrupted.
+  [[ ! -e "$MOLT_HOME/legacy-bin" && ! -e "$MOLT_HOME/legacy-shims" ]] || { molt_error 'legacy backup already exists; restore it before migrating'; exit 1; }
+  LEGACY_MOVED=1
+  mv "$MOLT_HOME/bin" "$MOLT_HOME/legacy-bin"
+  mv "$MOLT_HOME/shims" "$MOLT_HOME/legacy-shims"
+  molt_error 'legacy global dependencies and shared tool state are preserved; see README migration notes'
 fi
-write_manifest
-
-if command -v brew >/dev/null 2>&1 && ! command -v mutagen >/dev/null 2>&1; then
-  echo "Installing Mutagen with Homebrew..."
-  brew install mutagen-io/mutagen/mutagen
-  MUTAGEN_INSTALLED=1
-  write_manifest
+if [[ -f "$MANIFEST" && "$LEGACY" == 0 && -d "$MOLT_HOME/state/home/.mutagen/daemon" ]]; then
+  replacement="$MUTAGEN_BINARY"
+  case "$replacement" in "$MOLT_HOME/tools/"*) replacement="$STAGE/tools/${replacement#"$MOLT_HOME/tools/"}" ;; esac
+  MOLT_MUTAGEN_BINARY="$replacement" molt_stop_daemon
 fi
-
-command -v mutagen >/dev/null 2>&1 || die "Mutagen is required; install it with Homebrew or add it to PATH"
-
-if ! command -v opencode >/dev/null 2>&1 && [[ ! -x "$HOME/.opencode/bin/opencode" ]]; then
-  command -v curl >/dev/null 2>&1 || die "OpenCode is required; install it or add curl to PATH"
-  echo "Installing the local OpenCode client..."
-  curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
-  [[ -x "$HOME/.opencode/bin/opencode" ]] || die "OpenCode installation did not produce $HOME/.opencode/bin/opencode"
-  OPENCODE_INSTALLED=1
-  write_manifest
+[[ -f "$MOLT_HOME/config" ]] || cp "$SRC/config.example" "$MOLT_HOME/config"
+[[ -f "$MOLT_HOME/opencode.password" ]] || : >"$MOLT_HOME/opencode.password"
+chmod 600 "$MOLT_HOME/opencode.password"
+for name in bin shims tools; do
+  if [[ -L "$MOLT_HOME/$name" ]]; then
+    [[ "$(readlink "$MOLT_HOME/$name")" == "current/$name" ]] || { molt_error "unexpected $name symlink"; exit 1; }
+  elif [[ -e "$MOLT_HOME/$name" ]]; then molt_error "unexpected $name directory"; exit 1
+  else ln -s "current/$name" "$MOLT_HOME/$name"; fi
+done
+[[ ! -e "$MOLT_HOME/current.next" || -L "$MOLT_HOME/current.next" ]] || { molt_error 'unexpected current.next directory'; exit 1; }
+rm -f "$MOLT_HOME/current.next"
+ln -s "releases/$(basename "$STAGE")" "$MOLT_HOME/current.next"
+# -h on macOS prevents mv following the existing directory symlink.
+mv -fh "$MOLT_HOME/current.next" "$MOLT_HOME/current"
+SWITCHED=1
+mv "$STAGE/manifest" "$MANIFEST"
+cp "$STAGE/activate.zsh" "$MOLT_HOME/activate.zsh"
+COMMITTED=1
+if [[ "$LEGACY" == 1 ]]; then
+  molt_remove_legacy_shell "$MOLT_HOME/legacy-install-manifest"
+  for state in "$MOLT_HOME/projects"/*/path; do
+    [[ -f "$state" ]] || continue
+    printf 'legacy\n' >"$(dirname "$state")/layout"
+  done
 fi
-
-if ! command -v opencode >/dev/null 2>&1 && [[ ! -x "$HOME/.opencode/bin/opencode" ]]; then
-  die "OpenCode is required; install it or add it to PATH"
-fi
-
-rm -rf "$DEST/bin" "$DEST/shims"
-mkdir -p "$DEST/bin" "$DEST/shims"
-cp -R "$SRC/bin/." "$DEST/bin/"
-cp -R "$SRC/shims/." "$DEST/shims/"
-cp "$SRC/uninstall.sh" "$DEST/bin/molt-uninstall"
-chmod +x "$DEST/bin/molt" "$DEST/bin/molt-uninstall" "$DEST/shims/"*
-
-if [[ ! -f "$DEST/config" ]]; then
-  cp "$SRC/config.example" "$DEST/config"
-  echo "wrote $DEST/config — edit MOLT_HOST"
-fi
-
-if [[ ! -f "$DEST/opencode.password" ]]; then
-  (umask 077; : >"$DEST/opencode.password")
-  echo "put the serve password in $DEST/opencode.password (chmod 600)"
-fi
-chmod 600 "$DEST/opencode.password"
-
-if [[ ! -f "$ZSHRC" ]]; then
-  mkdir -p "$(dirname "$ZSHRC")"
-  (umask 022; : >"$ZSHRC")
-fi
-if ! grep -Fqx "$PATH_LINE" "$ZSHRC"; then
-  {
-    printf '\n# molt\n'
-    printf '%s\n' "$MOLT_HOME_LINE"
-    printf '%s\n' "$PATH_LINE"
-  } >>"$ZSHRC"
-  PATH_ADDED=1
-  write_manifest
-fi
-
-echo
-echo "Updated $ZSHRC. Start a new shell or run: source $ZSHRC"
-echo
-echo "Append $SRC/macos/ssh_config.snippet to ~/.ssh/config"
-echo "Then: molt"
+printf 'molt: installed in %s\nActivate this session: source %q\n' "$MOLT_HOME" "$MOLT_HOME/activate.zsh"

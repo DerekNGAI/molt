@@ -2,8 +2,14 @@
 # molt — local shell, remote project environments.
 set -euo pipefail
 
-MOLT_HOME="${MOLT_HOME:-$HOME/.molt}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/_molt.sh"
+if [[ -f "${SCRIPT_DIR%/*}/.install-manifest" ]]; then
+  MOLT_HOME="${MOLT_HOME:-${SCRIPT_DIR%/*}}"
+else
+  MOLT_HOME="${MOLT_HOME:-$HOME/.molt}"
+fi
+molt_safe_home || exit 1
 CONFIG_FILE="$MOLT_HOME/config"
 
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -16,13 +22,20 @@ fi
 
 MOLT_HOST="${MOLT_HOST:-oci-dev}"
 MOLT_ROOT="${MOLT_ROOT:-$HOME/src}"
-MOLT_REMOTE_ROOT="${MOLT_REMOTE_ROOT:-\$HOME/molt/projects}"
-MOLT_REMOTE_META_ROOT="${MOLT_REMOTE_META_ROOT:-\$HOME/molt/meta}"
+MOLT_REMOTE_HOME="${MOLT_REMOTE_HOME:-\$HOME/molt}"
 MOLT_OPENCODE_PASSWORD_FILE="${MOLT_OPENCODE_PASSWORD_FILE:-$MOLT_HOME/opencode.password}"
 MOLT_OPENCODE_BASE_PORT="${MOLT_OPENCODE_BASE_PORT:-4100}"
 MOLT_PORT_DENY="${MOLT_PORT_DENY:-22 53 111 631}"
 MOLT_PORT_POLL="${MOLT_PORT_POLL:-1}"
 MOLT_PROJECTS_HOME="${MOLT_PROJECTS_HOME:-$MOLT_HOME/projects}"
+[[ "$(molt_canonical "$MOLT_PROJECTS_HOME")" == "$MOLT_HOME/projects" ]] || { molt_error 'project state must be under MOLT_HOME/projects'; exit 1; }
+case "$(molt_canonical "$MOLT_OPENCODE_PASSWORD_FILE")" in "$MOLT_HOME/"*) ;; *) molt_error 'password must be inside MOLT_HOME'; exit 1 ;; esac
+MOLT_CONFIG_HOST="$MOLT_HOST"
+MOLT_INSTALL_ID="$(molt_value "$MOLT_HOME/.install-manifest" INSTALL_ID 2>/dev/null || printf 'development')"
+export MOLT_INSTALL_ID
+export MOLT_SSH_CONFIG="${MOLT_SSH_CONFIG:-}"
+mutagen() { molt_mutagen "$@"; }
+ssh() { molt_ssh "$@"; }
 
 log() { printf 'molt: %s\n' "$*" >&2; }
 die() { log "$*"; exit 1; }
@@ -106,7 +119,8 @@ detect_package_manager() {
 }
 
 manifest_ports() {
-  local path="$1" manifest="$path/.molt.yml"
+  local path="$1" manifest
+  manifest="$path/.molt.yml"
   [[ -f "$manifest" ]] || return 0
   awk '
     /^[[:space:]]*ports:[[:space:]]*$/ { in_ports = 1; next }
@@ -136,6 +150,13 @@ load_project_state() {
   PROJECT_SYNC="$(read_value "$state/sync")"
   PROJECT_OPENCODE_PORT="$(read_value "$state/opencode_port")"
   PROJECT_ACTIVE="$(read_value "$state/active")"
+  PROJECT_HOST="$(read_value "$state/host" 2>/dev/null || printf '%s' "$MOLT_CONFIG_HOST")"
+  MOLT_HOST="$PROJECT_HOST"
+  PROJECT_LAYOUT="$(read_value "$state/layout" 2>/dev/null || printf 'legacy')"
+  PROJECT_REMOTE_HOME="$(read_value "$state/remote_home" 2>/dev/null || printf '%s' '')"
+  PROJECT_GENERATED_ENV="$(read_value "$state/generated_env" 2>/dev/null || printf '0')"
+  PROJECT_SYNC_CREATED="$(read_value "$state/sync_created" 2>/dev/null || { if [[ -n "$PROJECT_REMOTE_PATH" ]]; then printf 1; else printf 0; fi; })"
+  [[ "$PROJECT_ID" =~ ^[a-f0-9]{12}$ && ! -L "$state" ]] || die 'invalid project state directory'
   return 0
 }
 
@@ -160,6 +181,11 @@ save_project() {
   write_value "$PROJECT_STATE/sync" "$PROJECT_SYNC"
   write_value "$PROJECT_STATE/opencode_port" "$PROJECT_OPENCODE_PORT"
   write_value "$PROJECT_STATE/active" "$PROJECT_ACTIVE"
+  write_value "$PROJECT_STATE/host" "$PROJECT_HOST"
+  write_value "$PROJECT_STATE/layout" "$PROJECT_LAYOUT"
+  write_value "$PROJECT_STATE/remote_home" "$PROJECT_REMOTE_HOME"
+  write_value "$PROJECT_STATE/generated_env" "$PROJECT_GENERATED_ENV"
+  write_value "$PROJECT_STATE/sync_created" "$PROJECT_SYNC_CREATED"
   : >"$PROJECT_STATE/ports"
   manifest_ports "$PROJECT_PATH" >>"$PROJECT_STATE/ports" || true
 }
@@ -169,6 +195,8 @@ register_project() {
   path="$(repo_root "$path")"
   id="$(project_id_for_path "$path")"
   state="$(project_state_dir "$path")"
+  if [[ -f "$state/path" ]]; then load_project_state "$state"; return; fi
+  [[ ! -L "$state" ]] || die 'symlinked project state directory'
   mkdir -p "$state"
 
   PROJECT_STATE="$state"
@@ -180,11 +208,17 @@ register_project() {
   PROJECT_REMOTE_PATH=""
   PROJECT_REMOTE_META=""
   PROJECT_REMOTE_OPENCODE_CONFIG=""
-  PROJECT_CONTAINER="molt-$id"
-  PROJECT_IMAGE="molt-env-$id:latest"
-  PROJECT_SYNC="molt-$id"
+  PROJECT_CONTAINER="molt-${MOLT_INSTALL_ID:0:8}-$id"
+  PROJECT_IMAGE="molt-env-${MOLT_INSTALL_ID:0:8}-$id:latest"
+  PROJECT_SYNC="$PROJECT_CONTAINER"
   PROJECT_OPENCODE_PORT="$((MOLT_OPENCODE_BASE_PORT + (16#${id:0:4} % 500)))"
   PROJECT_ACTIVE="$(read_value "$state/active" 2>/dev/null || printf '0')"
+  PROJECT_HOST="$MOLT_CONFIG_HOST"
+  MOLT_HOST="$PROJECT_HOST"
+  PROJECT_LAYOUT=2
+  PROJECT_REMOTE_HOME=""
+  PROJECT_GENERATED_ENV=0
+  PROJECT_SYNC_CREATED=0
   save_project
 }
 
@@ -228,12 +262,11 @@ expand_remote_path() {
 }
 
 set_remote_paths() {
-  local home="$1" root meta
-  root="$(expand_remote_path "$MOLT_REMOTE_ROOT" "$home")"
-  meta="$(expand_remote_path "$MOLT_REMOTE_META_ROOT" "$home")"
-  PROJECT_REMOTE_PATH="$root/$PROJECT_ID"
-  PROJECT_REMOTE_META="$meta/$PROJECT_ID"
-  PROJECT_REMOTE_OPENCODE_CONFIG="$home/.config/opencode"
+  local record="$MOLT_HOME/state/remotes/$(molt_host_key "$PROJECT_HOST")"
+  PROJECT_REMOTE_HOME="$(read_value "$record/root")"
+  PROJECT_REMOTE_PATH="$PROJECT_REMOTE_HOME/projects/$PROJECT_ID"
+  PROJECT_REMOTE_META="$PROJECT_REMOTE_HOME/meta/$PROJECT_ID"
+  PROJECT_REMOTE_OPENCODE_CONFIG="$PROJECT_REMOTE_HOME/config/opencode"
   save_project
 }
 
@@ -242,11 +275,11 @@ ssh_ok() { ssh -O check "$MOLT_HOST" >/dev/null 2>&1; }
 ssh_up() {
   need ssh
   if ssh_ok; then return 0; fi
-  ssh -fN "$MOLT_HOST" || die "ssh $MOLT_HOST failed"
+  ssh -fN "$MOLT_HOST" || { log "ssh $MOLT_HOST failed"; return 1; }
 }
 
 ssh_down() {
-  ssh -O exit "$MOLT_HOST" >/dev/null 2>&1 || true
+  if ssh_ok; then ssh -O exit "$MOLT_HOST"; fi
 }
 
 remote_run() {
@@ -263,59 +296,26 @@ upload_file() {
   ssh "$MOLT_HOST" "cat > $(quote_remote "$destination")" <"$source"
 }
 
+remote_script() {
+  ssh "$MOLT_HOST" "bash -s -- $(quote_remote "$@")" <"$SCRIPT_DIR/_remote.sh"
+}
+
 cmd_setup() {
-  local setup_output
+  local root home record
+  molt_owned_home || die 'install molt before preparing a VM'
   need ssh
   ssh_up
-  log "checking VM $MOLT_HOST"
-  setup_output="$(ssh "$MOLT_HOST" 'bash -s' <<'REMOTE_SETUP'
-set -eu
-
-reconnect=0
-if [ "$(id -u)" -eq 0 ]; then
-  SUDO=""
-elif command -v sudo >/dev/null 2>&1; then
-  SUDO=sudo
-else
-  echo "molt: VM user needs sudo" >&2
-  exit 1
-fi
-
-if ! command -v docker >/dev/null 2>&1; then
-  if command -v apt-get >/dev/null 2>&1; then
-    $SUDO apt-get update
-    DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y \
-      ca-certificates curl git iproute2 procps docker.io
-    reconnect=1
-  else
-    echo "molt: automatic setup currently supports Ubuntu/Debian VMs" >&2
-    exit 1
+  home="$(remote_home)"
+  root="$(expand_remote_path "${PROJECT_REMOTE_HOME:-$MOLT_REMOTE_HOME}" "$home")"
+  record="$MOLT_HOME/state/remotes/$(molt_host_key "$MOLT_HOST")"
+  if [[ -f "$record/root" && "$(read_value "$record/root")" != "$root" ]]; then
+    die 'remote root changed; clean up the recorded root before selecting another'
   fi
-fi
-
-if command -v systemctl >/dev/null 2>&1; then
-  $SUDO systemctl enable --now docker
-fi
-
-if ! id -nG "$USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
-  $SUDO usermod -aG docker "$USER" 2>/dev/null || true
-  reconnect=1
-fi
-mkdir -p "$HOME/molt/projects" "$HOME/molt/meta" "$HOME/.molt"
-mkdir -p "$HOME/.config/opencode"
-$SUDO docker info >/dev/null
-printf 'MOLT_RECONNECT=%s\n' "$reconnect"
-REMOTE_SETUP
-  )"
-  if [[ "$setup_output" == *MOLT_RECONNECT=1* ]]; then
-    ssh_down
-    ssh_up
-  fi
-  remote_run "docker info >/dev/null" || die "Docker is not available to $MOLT_HOST after setup"
-  if [[ "$setup_output" == *MOLT_RECONNECT=1* ]]; then
-    restore_forwards
-  fi
-  log "VM ready: Docker and molt directories"
+  write_value "$record/host" "$MOLT_HOST"
+  write_value "$record/root" "$root"
+  root="$(remote_script setup "$root" "$MOLT_INSTALL_ID")" || die 'remote setup failed; its record is retained'
+  write_value "$record/root" "$root"
+  log "VM ready: $MOLT_HOST:$root"
 }
 
 cmd_inspect() {
@@ -343,9 +343,10 @@ cmd_inspect() {
 }
 
 cmd_generate_env() {
-  local path runtime package_manager
+  local path runtime package_manager output
   path="$(repo_root "${1:-.}")"
-  if [[ -f "$path/devenv.nix" ]]; then
+  output="${2:-$path/devenv.nix}"
+  if [[ -f "$output" ]]; then
     log "devenv.nix already exists in $path"
     return 0
   fi
@@ -366,7 +367,7 @@ cmd_generate_env() {
         printf '%s\n' '  languages.javascript.enable = true;'
         printf '%s\n' '  languages.javascript.package = pkgs.nodejs;'
         printf '%s\n' '}'
-      } >"$path/devenv.nix"
+      } >"$output"
       ;;
     rust)
       {
@@ -376,7 +377,7 @@ cmd_generate_env() {
         printf '%s\n' '  languages.rust.enable = true;'
         printf '%s\n' '  languages.rust.channel = "stable";'
         printf '%s\n' '}'
-      } >"$path/devenv.nix"
+      } >"$output"
       ;;
     go)
       {
@@ -385,7 +386,7 @@ cmd_generate_env() {
         printf '%s\n' '  packages = [ pkgs.git ];'
         printf '%s\n' '  languages.go.enable = true;'
         printf '%s\n' '}'
-      } >"$path/devenv.nix"
+      } >"$output"
       ;;
     python)
       {
@@ -394,7 +395,7 @@ cmd_generate_env() {
         printf '%s\n' '  packages = [ pkgs.git ];'
         printf '%s\n' '  languages.python.enable = true;'
         printf '%s\n' '}'
-      } >"$path/devenv.nix"
+      } >"$output"
       ;;
     *)
       {
@@ -402,10 +403,11 @@ cmd_generate_env() {
         printf '%s\n' '{'
         printf '%s\n' '  packages = [ pkgs.git ];'
         printf '%s\n' '}'
-      } >"$path/devenv.nix"
+      } >"$output"
       ;;
   esac
-  log "generated $path/devenv.nix"
+  if [[ "$output" == "$path/devenv.nix" ]]; then log "generated $output";
+  else log "generated remote environment for $(basename "$path")"; fi
 }
 
 scan_repositories() {
@@ -438,10 +440,12 @@ cmd_register() {
 dockerfile_for_project() {
   local file="$1"
   {
-    printf '%s\n' 'FROM ghcr.io/cachix/devenv/devcontainer:latest'
+    printf '%s\n' 'FROM ghcr.io/cachix/devenv/devcontainer@sha256:124212f0c64aecdfd57acf10c959ae17708afeaf9bd1f7c823f39c5ade20b981'
     printf '%s\n' 'USER root'
     printf '%s\n' 'ENV PATH="/root/.opencode/bin:/root/.nix-profile/bin:/root/.local/bin:${PATH}"'
-    printf '%s\n' 'RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'
+    printf '%s\n' 'ARG TARGETARCH'
+    printf '%s\n' 'COPY tools.lock /tmp/tools.lock'
+    printf '%s\n' 'RUN case "$TARGETARCH" in arm64) asset=opencode-linux-arm64.tar.gz ;; amd64) asset=opencode-linux-x64-baseline.tar.gz ;; *) exit 1 ;; esac; curl -fL "https://github.com/anomalyco/opencode/releases/download/v1.18.33/$asset" -o /tmp/opencode.tar.gz && awk -v asset="$asset" '\''$2==asset {print $1 "  /tmp/opencode.tar.gz"}'\'' /tmp/tools.lock | sha256sum -c - && mkdir -p /root/.opencode/bin && tar -xzf /tmp/opencode.tar.gz -C /root/.opencode/bin && rm /tmp/opencode.tar.gz /tmp/tools.lock'
     printf '%s\n' 'WORKDIR /workspace'
     printf '%s\n' 'ENTRYPOINT []'
     printf '%s\n' 'CMD ["sleep", "infinity"]'
@@ -449,9 +453,29 @@ dockerfile_for_project() {
 }
 
 start_sync() {
-  need mutagen
-  mutagen daemon start >/dev/null 2>&1 || true
-  if ! mutagen sync create \
+  local sessions file ignores="" previous
+  local -a extra=()
+  # Keep runtime-generated lock/config files when there is no Mac source for them.
+  # Once a source file is added, the next start recreates the session and syncs it.
+  for file in devenv.lock devenv.yaml; do
+    if [[ ! -f "$PROJECT_PATH/$file" ]]; then
+      extra+=(--ignore "/$file")
+      ignores="$ignores /$file"
+    fi
+  done
+  previous="$(read_value "$PROJECT_STATE/sync_ignores" 2>/dev/null || printf '%s' '')"
+  PROJECT_SYNC_CREATED=1
+  save_project
+  mutagen daemon start
+  sessions="$(mutagen sync list --template '{{range .}}{{.Name}}{{"\n"}}{{end}}')"
+  if [[ "$previous" != "$ignores" ]] && printf '%s\n' "$sessions" | grep -Fxq "$PROJECT_SYNC"; then
+    mutagen sync terminate "$PROJECT_SYNC"
+    sessions=""
+  fi
+  if printf '%s\n' "$sessions" | grep -Fxq "$PROJECT_SYNC"; then
+    mutagen sync resume "$PROJECT_SYNC"
+  else
+    mutagen sync create \
     --name "$PROJECT_SYNC" \
     --mode one-way-replica \
     --ignore-vcs \
@@ -464,48 +488,50 @@ start_sync() {
     --ignore .venv \
     --ignore venv \
     --ignore __pycache__ \
-    "$PROJECT_PATH" "$MOLT_HOST:$PROJECT_REMOTE_PATH" >/dev/null 2>&1; then
-    mutagen sync resume "$PROJECT_SYNC" >/dev/null 2>&1 || die "could not start Mutagen session $PROJECT_SYNC"
+    ${extra[@]+"${extra[@]}"} \
+    "$PROJECT_PATH" "$MOLT_HOST:$PROJECT_REMOTE_PATH" >"$PROJECT_STATE/sync.log" 2>&1 || {
+      cat "$PROJECT_STATE/sync.log" >&2
+      die "could not start Mutagen session $PROJECT_SYNC"
+    }
   fi
-  mutagen sync flush "$PROJECT_SYNC" >/dev/null 2>&1 || true
+  write_value "$PROJECT_STATE/sync_ignores" "$ignores"
+  mutagen sync flush "$PROJECT_SYNC"
 }
 
 ensure_container() {
   local running docker_flags
   running="$(remote_run "docker inspect -f '{{.State.Running}}' $(quote_remote "$PROJECT_CONTAINER") 2>/dev/null || true")"
   if [[ "$running" == true ]]; then return 0; fi
-  remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER") >/dev/null 2>&1 || true"
-  docker_flags="--mount type=bind,src=$(quote_remote "$PROJECT_REMOTE_PATH"),dst=/workspace"
-  docker_flags="$docker_flags --mount type=bind,src=$(quote_remote "$PROJECT_REMOTE_META"),dst=/molt-meta"
-  docker_flags="$docker_flags --mount type=bind,src=$(quote_remote "$PROJECT_REMOTE_OPENCODE_CONFIG"),dst=/root/.config/opencode"
-  docker_flags="$docker_flags --mount type=volume,src=$(quote_remote "molt-cache-$PROJECT_ID"),dst=/root/.cache"
+  if [[ "$running" == false ]]; then remote_run "docker rm $(quote_remote "$PROJECT_CONTAINER")"; fi
+  docker_flags="--label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID"
+  docker_flags="$docker_flags --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_PATH,dst=/workspace")"
+  docker_flags="$docker_flags --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_META,dst=/molt-meta")"
+  docker_flags="$docker_flags --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_HOME/config,dst=/molt-config")"
+  docker_flags="$docker_flags --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_HOME/cache/$PROJECT_ID,dst=/molt-cache")"
+  docker_flags="$docker_flags --env HOME=/molt-cache/home --env XDG_CONFIG_HOME=/molt-config --env XDG_DATA_HOME=/molt-cache/data --env XDG_CACHE_HOME=/molt-cache/cache --env XDG_STATE_HOME=/molt-cache/state --env TMPDIR=/molt-cache/tmp --env OPENCODE_CONFIG_DIR=/molt-config/opencode --env OPENCODE_DISABLE_AUTOUPDATE=1"
   remote_run "docker run -d --name $(quote_remote "$PROJECT_CONTAINER") --network host --workdir /workspace $docker_flags $(quote_remote "$PROJECT_IMAGE") sleep infinity >/dev/null"
 }
 
 ensure_project_container() {
-  need mutagen
   ssh_up
   if [[ -z "$PROJECT_REMOTE_PATH" || -z "$PROJECT_REMOTE_META" || -z "$PROJECT_REMOTE_OPENCODE_CONFIG" ]]; then
-    set_remote_paths "$(remote_home)"
+    cmd_setup
+    set_remote_paths
   fi
-  remote_mkdir "$PROJECT_REMOTE_PATH"
-  remote_mkdir "$PROJECT_REMOTE_META"
-  remote_mkdir "$PROJECT_REMOTE_OPENCODE_CONFIG"
-  mutagen sync resume "$PROJECT_SYNC" >/dev/null 2>&1 || true
+  prepare_project_dirs
+  mutagen sync resume "$PROJECT_SYNC"
   ensure_container
   forward_project_ports
+}
+
+prepare_project_dirs() {
+  remote_script prepare "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$PROJECT_ID"
 }
 
 ensure_password() {
   mkdir -p "$MOLT_HOME"
   if [[ ! -s "$MOLT_OPENCODE_PASSWORD_FILE" ]]; then
-    umask 077
-    if command -v openssl >/dev/null 2>&1; then
-      openssl rand -hex 24 >"$MOLT_OPENCODE_PASSWORD_FILE"
-    else
-      LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48 >"$MOLT_OPENCODE_PASSWORD_FILE"
-      printf '\n' >>"$MOLT_OPENCODE_PASSWORD_FILE"
-    fi
+    (umask 077; openssl rand -hex 24 >"$MOLT_OPENCODE_PASSWORD_FILE")
   fi
   chmod 600 "$MOLT_OPENCODE_PASSWORD_FILE"
 }
@@ -518,10 +544,15 @@ sync_password() {
 
 start_opencode_remote() {
   local check command
-  check="docker exec $(quote_remote "$PROJECT_CONTAINER") sh -lc $(quote_remote "pgrep -f 'opencode serve.*$PROJECT_OPENCODE_PORT' >/dev/null")"
+  check="docker exec $(quote_remote "$PROJECT_CONTAINER") sh -c $(quote_remote "pgrep -f '[o]pencode serve.*$PROJECT_OPENCODE_PORT' >/dev/null")"
   if remote_run "$check" >/dev/null 2>&1; then return 0; fi
-  command="export OPENCODE_SERVER_PASSWORD=\$(cat /molt-meta/opencode.password); exec devenv shell -- /root/.opencode/bin/opencode serve --hostname 0.0.0.0 --port $(quote_remote "$PROJECT_OPENCODE_PORT") > /molt-meta/opencode.log 2>&1"
-  remote_run "docker exec -d --workdir /workspace $(quote_remote "$PROJECT_CONTAINER") sh -lc $(quote_remote "$command") >/dev/null"
+  command="export OPENCODE_SERVER_PASSWORD=\$(cat /molt-meta/opencode.password); exec devenv shell -- bash -c $(quote_remote "cd /workspace && exec /root/.opencode/bin/opencode serve --hostname 0.0.0.0 --port $PROJECT_OPENCODE_PORT") > /molt-meta/opencode.log 2>&1"
+  remote_run "docker exec -d --workdir $(quote_remote "$(project_environment_dir)") $(quote_remote "$PROJECT_CONTAINER") sh -c $(quote_remote "$command") >/dev/null"
+}
+
+project_environment_dir() {
+  if [[ "$PROJECT_GENERATED_ENV" == 1 ]]; then printf /molt-meta/env;
+  else printf /workspace; fi
 }
 
 deny_port() {
@@ -599,43 +630,48 @@ restore_forwards() {
 }
 
 cmd_start() {
-  local path="$(repo_root "${1:-.}")" dockerfile tmp
-  need mutagen
-  if [[ ! -f "$path/devenv.nix" ]]; then
-    cmd_generate_env "$path"
-  fi
+  local path="$(repo_root "${1:-.}")" dockerfile tmp work
+  molt_owned_home || die 'install molt before starting a project'
   register_project "$path"
-  cmd_setup
-  load_project "$path" || die "could not load project state"
-  set_remote_paths "$(remote_home)"
-  tmp=""
+  [[ "$PROJECT_LAYOUT" == 2 ]] || die 'reset this legacy project before starting it with the contained layout'
+  work="$(mktemp -d "$MOLT_HOME/state/tmp/start.XXXXXX")"
+  tmp="$work/environment"
   start_cleanup() {
-    local rc=$?
+    local rc="$1" work_dir="$2"
     trap - EXIT
-    [[ -z "${tmp:-}" ]] || rm -f "$tmp"
+    rm -rf -- "$work_dir"
     if [[ "$rc" -ne 0 ]]; then
-      if [[ -n "${PROJECT_SYNC:-}" ]]; then
-        mutagen sync terminate "$PROJECT_SYNC" >/dev/null 2>&1 || true
-      fi
-      if ssh_ok; then
-        cleanup_project_remote_connected || true
-      fi
+      if terminate_project_sync; then cleanup_project_remote || log 'startup cleanup is incomplete; run molt reset to retry';
+      else log 'startup sync cleanup is incomplete; run molt reset to retry'; fi
       PROJECT_ACTIVE=0
       save_project || true
     fi
     exit "$rc"
   }
-  trap start_cleanup EXIT
-  remote_mkdir "$PROJECT_REMOTE_PATH"
-  remote_mkdir "$PROJECT_REMOTE_META"
-  remote_mkdir "$PROJECT_REMOTE_OPENCODE_CONFIG"
+  trap "start_cleanup \$? $(quote_remote "$work")" EXIT
+  printf '%s\n' "$$" >"$work/parent.pid"
+  printf '%s\n' "$0" >"$work/script"
+  cmd_setup
+  load_project "$path" || die "could not load project state"
+  set_remote_paths
+  prepare_project_dirs
   start_sync
 
-  tmp="$(mktemp "${TMPDIR:-/tmp}/molt-dockerfile.XXXXXX")"
   dockerfile_for_project "$tmp"
   upload_file "$tmp" "$PROJECT_REMOTE_META/Dockerfile"
   rm -f "$tmp"
-  remote_run "docker build --tag $(quote_remote "$PROJECT_IMAGE") --file $(quote_remote "$PROJECT_REMOTE_META/Dockerfile") $(quote_remote "$PROJECT_REMOTE_META") >/dev/null"
+  upload_file "$SCRIPT_DIR/../tools.lock" "$PROJECT_REMOTE_META/tools.lock"
+  if [[ ! -f "$path/devenv.nix" ]]; then
+    cmd_generate_env "$path" "$tmp"
+    upload_file "$tmp" "$PROJECT_REMOTE_META/env/devenv.nix"
+    rm -f "$tmp"
+    PROJECT_GENERATED_ENV=1
+    save_project
+  else
+    PROJECT_GENERATED_ENV=0
+    save_project
+  fi
+  remote_run "docker build --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --tag $(quote_remote "$PROJECT_IMAGE") --file $(quote_remote "$PROJECT_REMOTE_META/Dockerfile") $(quote_remote "$PROJECT_REMOTE_META") >/dev/null"
   sync_password
   ensure_container
   start_opencode_remote
@@ -643,16 +679,22 @@ cmd_start() {
   save_project
   forward_project_ports
   log "$PROJECT_NAME is running in $MOLT_HOST ($PROJECT_CONTAINER)"
+  rm -rf -- "$work"
   trap - EXIT
 }
 
 cmd_stop_project() {
   local path="${1:-.}"
   load_project "$path" || return 0
+  stop_loaded_project
+}
+
+stop_loaded_project() {
   [[ "$PROJECT_ACTIVE" == 1 ]] || return 0
   ssh_up
-  remote_run "docker stop $(quote_remote "$PROJECT_CONTAINER") >/dev/null 2>&1 || true"
-  mutagen sync pause "$PROJECT_SYNC" >/dev/null 2>&1 || true
+  remote_run "docker stop $(quote_remote "$PROJECT_CONTAINER")" || return 1
+  if [[ "$PROJECT_LAYOUT" == 2 ]]; then mutagen sync pause "$PROJECT_SYNC" || return 1;
+  else molt_legacy_mutagen sync pause "$PROJECT_SYNC" || return 1; fi
   cancel_project_forwards
   PROJECT_ACTIVE=0
   save_project
@@ -660,13 +702,16 @@ cmd_stop_project() {
 }
 
 cmd_down() {
-  local state
+  local state failed=0
   for state in "$MOLT_PROJECTS_HOME"/*/path; do
     [[ -f "$state" ]] || continue
-    cmd_stop_project "$(read_value "$state")"
+    load_project_state "$(dirname "$state")" || { failed=1; continue; }
+    stop_loaded_project || failed=1
+    ssh_down || failed=1
   done
   ssh_down
   log "molt down"
+  return "$failed"
 }
 
 container_path_for_pwd() {
@@ -678,9 +723,9 @@ container_path_for_pwd() {
 }
 
 watch_and_forward() {
-  local before="$1" added="$2" port
+  local before="$1" added="$2" parent="$3" port
   : >"$added"
-  while :; do
+  while [[ -d "$MOLT_HOME" ]] && kill -0 "$parent" 2>/dev/null; do
     while IFS= read -r port; do
       [[ -n "$port" ]] || continue
       grep -qx "$port" "$before" 2>/dev/null && continue
@@ -714,49 +759,57 @@ cmd_run() {
     ssh_flags=(-t)
   fi
 
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/molt-run.XXXXXX")"
+  tmp="$(mktemp -d "$MOLT_HOME/state/tmp/run.XXXXXX")"
   listen_ports_remote >"$tmp/before" || true
   : >"$tmp/added"
-  watch_and_forward "$tmp/before" "$tmp/added" &
+  printf '%s\n' "$$" >"$tmp/parent.pid"
+  printf '%s\n' "$0" >"$tmp/script"
+  watch_and_forward "$tmp/before" "$tmp/added" "$$" &
   watcher=$!
 
   cleanup_run() {
-    kill "$watcher" 2>/dev/null || true
-    wait "$watcher" 2>/dev/null || true
-    if [[ -f "$tmp/added" ]]; then
+    local run_dir="$1" watcher_pid="$2" port
+    kill "$watcher_pid" 2>/dev/null || true
+    wait "$watcher_pid" 2>/dev/null || true
+    if [[ -f "$run_dir/added" ]]; then
       while IFS= read -r port; do
         [[ -n "$port" ]] && ssh -O cancel -L "127.0.0.1:${port}:127.0.0.1:${port}" "$MOLT_HOST" >/dev/null 2>&1 || true
-      done <"$tmp/added"
+      done <"$run_dir/added"
     fi
-    rm -rf "$tmp"
+    rm -rf "$run_dir"
   }
-  trap cleanup_run EXIT INT TERM
+  trap "cleanup_run $(quote_remote "$tmp" "$watcher")" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
-  remote_command="docker exec $docker_flags --workdir $(quote_remote "$container_path") $(quote_remote "$PROJECT_CONTAINER") devenv shell -- bash -lc $(quote_remote "$command")"
+  command="cd $(quote_remote "$container_path") && $command"
+  remote_command="docker exec $docker_flags --workdir $(quote_remote "$(project_environment_dir)") $(quote_remote "$PROJECT_CONTAINER") devenv shell -- bash -c $(quote_remote "$command")"
   set +e
-  ssh "${ssh_flags[@]}" "$MOLT_HOST" "$remote_command"
+  # Bash 3 treats an empty array as unset under nounset.
+  ssh ${ssh_flags[@]+"${ssh_flags[@]}"} "$MOLT_HOST" "$remote_command"
   rc=$?
   set -e
   exit "$rc"
-}
-
-real_binary() {
-  local name="$1" path shim="$MOLT_HOME/shims/$1"
-  if [[ -x "$HOME/.opencode/bin/$name" ]]; then
-    printf '%s\n' "$HOME/.opencode/bin/$name"
-    return 0
-  fi
-  while IFS= read -r path; do
-    [[ "$path" == "$shim" ]] && continue
-    [[ -x "$path" ]] && { printf '%s\n' "$path"; return 0; }
-  done < <(type -aP "$name" 2>/dev/null || true)
-  return 1
 }
 
 load_password() {
   ensure_password
   OPENCODE_SERVER_PASSWORD="$(tr -d '\n' <"$MOLT_OPENCODE_PASSWORD_FILE")"
   export OPENCODE_SERVER_PASSWORD
+}
+
+cmd_client() {
+  local tmp
+  molt_state
+  tmp="$(mktemp -d "$MOLT_HOME/state/tmp/client.XXXXXX")"
+  trap "rm -rf -- $(quote_remote "$tmp")" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '%s\n' "$$" >"$tmp/parent.pid"
+  printf '%s\n' "$0" >"$tmp/script"
+  molt_client "$@"
+  rm -rf "$tmp"
+  trap - EXIT INT TERM
 }
 
 cmd_oc() {
@@ -767,10 +820,8 @@ cmd_oc() {
   sync_password
   start_opencode_remote
   forward_port "$PROJECT_OPENCODE_PORT"
-  real="$(real_binary opencode || true)"
-  [[ -n "$real" ]] || die "local opencode client not found; run install.sh again"
   load_password
-  exec env OPENCODE_SERVER_PASSWORD="$OPENCODE_SERVER_PASSWORD" "$real" attach "http://127.0.0.1:$PROJECT_OPENCODE_PORT" "$@"
+  cmd_client attach "http://127.0.0.1:$PROJECT_OPENCODE_PORT" "$@"
 }
 
 cmd_status() {
@@ -797,7 +848,7 @@ cmd_doctor() {
   for command in git ssh; do
     if command -v "$command" >/dev/null 2>&1; then printf 'ok   %s\n' "$command"; else printf 'miss %s\n' "$command"; failed=1; fi
   done
-  if command -v mutagen >/dev/null 2>&1; then printf 'ok   mutagen\n'; else printf 'miss mutagen\n'; failed=1; fi
+  if mutagen version >/dev/null 2>&1; then printf 'ok   mutagen\n'; else printf 'miss mutagen\n'; failed=1; fi
   if ssh -o BatchMode=yes "$MOLT_HOST" 'true' >/dev/null 2>&1; then
     if ssh_up && remote_run 'command -v docker >/dev/null && docker info >/dev/null 2>&1'; then
       printf 'ok   %s Docker\n' "$MOLT_HOST"
@@ -843,63 +894,79 @@ commit_generated_env() {
 }
 
 cleanup_project_remote_connected() {
-  local -a paths=()
-  [[ -n "${PROJECT_REMOTE_PATH:-}" ]] && paths+=("$PROJECT_REMOTE_PATH")
-  [[ -n "${PROJECT_REMOTE_META:-}" ]] && paths+=("$PROJECT_REMOTE_META")
-
-  remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER") >/dev/null 2>&1 || true"
-  remote_run "docker image rm $(quote_remote "$PROJECT_IMAGE") >/dev/null 2>&1 || true"
-  remote_run "docker volume rm -f $(quote_remote "molt-cache-$PROJECT_ID") >/dev/null 2>&1 || true"
-  if [[ ${#paths[@]} -gt 0 ]]; then
-    remote_run "rm -rf -- $(quote_remote "${paths[@]}")"
-  fi
+  local root="${PROJECT_REMOTE_HOME:-}"
+  if [[ -z "$PROJECT_REMOTE_PATH" && -z "$PROJECT_REMOTE_META" && -z "$root" ]]; then return 0; fi
+  [[ -n "$root" ]] || root="$(dirname "$(dirname "$PROJECT_REMOTE_PATH")")"
+  remote_script cleanup "$root" "$MOLT_INSTALL_ID" "$PROJECT_ID" "$PROJECT_CONTAINER" "$PROJECT_IMAGE" \
+    "$PROJECT_REMOTE_PATH" "$PROJECT_REMOTE_META" "$PROJECT_LAYOUT" || return 1
   cancel_project_forwards
 }
 
 cleanup_project_remote() {
-  ssh_up
+  if [[ -z "$PROJECT_REMOTE_PATH" && -z "$PROJECT_REMOTE_META" && -z "$PROJECT_REMOTE_HOME" ]]; then return 0; fi
+  ssh_up || return 1
   cleanup_project_remote_connected
 }
 
+terminate_project_sync() {
+  local sessions
+  [[ "$PROJECT_SYNC_CREATED" == 1 ]] || return 0
+  if [[ "$PROJECT_LAYOUT" == 2 ]]; then
+    sessions="$(mutagen sync list --template '{{range .}}{{.Name}}{{"\n"}}{{end}}')" || return 1
+    if printf '%s\n' "$sessions" | grep -Fxq "$PROJECT_SYNC"; then mutagen sync terminate "$PROJECT_SYNC" || return 1; fi
+  else
+    sessions="$(molt_legacy_mutagen sync list --template '{{range .}}{{.Name}}{{"\n"}}{{end}}')" || return 1
+    if printf '%s\n' "$sessions" | grep -Fxq "$PROJECT_SYNC"; then molt_legacy_mutagen sync terminate "$PROJECT_SYNC" || return 1; fi
+  fi
+  PROJECT_SYNC_CREATED=0
+  write_value "$PROJECT_STATE/sync_created" 0
+}
+
 reset_loaded_project() {
-  mutagen sync terminate "$PROJECT_SYNC" >/dev/null 2>&1 || true
-  cleanup_project_remote
-  rm -rf "$PROJECT_STATE"
+  terminate_project_sync || { log "could not terminate $PROJECT_SYNC; retry records retained"; return 1; }
+  cleanup_project_remote || { log "could not clean $PROJECT_NAME; retry records retained"; return 1; }
+  [[ "$PROJECT_STATE" == "$MOLT_HOME/projects/$PROJECT_ID" && ! -L "$PROJECT_STATE" ]] || return 1
+  rm -rf -- "$PROJECT_STATE" || return 1
   log "reset $PROJECT_NAME"
 }
 
 cmd_reset_all() {
-  local state count=0 answer
+  local state count=0 answer failed=0
   for state in "$MOLT_PROJECTS_HOME"/*/path; do
     [[ -f "$state" ]] || continue
     count=$((count + 1))
   done
   [[ "$count" -gt 0 ]] || return 0
 
-  printf 'Remove all remote project resources and local molt state? [y/N] '
   if [[ "${MOLT_ASSUME_YES:-0}" == 1 ]]; then
     answer=y
   else
+    printf 'Remove all remote project resources and local molt state? [y/N] '
     read -r answer
   fi
   [[ "$answer" == y || "$answer" == Y ]] || return 0
 
   for state in "$MOLT_PROJECTS_HOME"/*/path; do
     [[ -f "$state" ]] || continue
-    load_project_state "$(dirname "$state")" || continue
-    reset_loaded_project
+    load_project_state "$(dirname "$state")" || { failed=1; continue; }
+    reset_loaded_project || failed=1
   done
-  ssh_down
+  ssh_down || failed=1
+  return "$failed"
 }
 
 cmd_remove_remote_roots() {
-  local home root meta parent
-  ssh_up
-  home="$(remote_home)"
-  root="$(expand_remote_path "$MOLT_REMOTE_ROOT" "$home")"
-  meta="$(expand_remote_path "$MOLT_REMOTE_META_ROOT" "$home")"
-  parent="$(dirname "$root")"
-  remote_run "rmdir -- $(quote_remote "$root" "$meta" "$parent" "$home/.molt") 2>/dev/null || true"
+  local state root failed=0
+  for state in "$MOLT_HOME/state/remotes"/*/host; do
+    [[ -f "$state" ]] || continue
+    MOLT_HOST="$(read_value "$state")"
+    root="$(read_value "$(dirname "$state")/root")"
+    if remote_script remove-root "$root" "$MOLT_INSTALL_ID"; then
+      ssh_down || failed=1
+      rm -rf -- "$(dirname "$state")" || failed=1
+    else failed=1; fi
+  done
+  return "$failed"
 }
 
 cmd_reset() {
@@ -910,10 +977,10 @@ cmd_reset() {
 
   local path="$(repo_root "${1:-.}")" answer
   load_project "$path" || return 0
-  printf 'Remove the remote container, image, sync, and local molt state for %s? [y/N] ' "$PROJECT_NAME"
   if [[ "${MOLT_ASSUME_YES:-0}" == 1 ]]; then
     answer=y
   else
+    printf 'Remove the remote container, image, sync, and local molt state for %s? [y/N] ' "$PROJECT_NAME"
     read -r answer
   fi
   [[ "$answer" == y || "$answer" == Y ]] || return 0
@@ -960,10 +1027,6 @@ cmd_tui() {
       read -r action
       case "$action" in
         1)
-          if [[ ! -f "$repo/devenv.nix" ]]; then
-            cmd_generate_env "$repo"
-            commit_generated_env "$repo"
-          fi
           cmd_start "$repo"
           ;;
         2) cmd_stop_project "$repo" ;;
@@ -985,12 +1048,13 @@ molt — local shell, remote project environments
   molt scan [root]             print Git repositories under root
   molt inspect [repo]          detect runtime and environment files
   molt generate-env [repo]     create a minimal devenv.nix locally
-  molt setup                   install Docker and molt directories on VM
+  molt setup                   check Docker and prepare the owned VM root
   molt register [repo]         register a repository locally
   molt start [repo]            sync, build, and start its VM container
   molt stop [repo]             stop its VM container and sync
   molt up                      start all registered active projects
   molt down                    stop all active projects
+  molt local-down              stop owned local helpers and SSH connections
   molt status                  show SSH, project, container, and forwards
   molt doctor                  check local and VM prerequisites
   molt run <command> [args]    run a command in the current project
@@ -1033,6 +1097,27 @@ main() {
     run) cmd_run "$@" ;;
     ssh) ssh_up; exec ssh "$MOLT_HOST" "$@" ;;
     oc|opencode) cmd_oc "$@" ;;
+    client) cmd_client "$@" ;;
+    cleanup-inventory)
+      for state in "$MOLT_PROJECTS_HOME"/*/path; do
+        [[ -f "$state" ]] || continue
+        load_project_state "$(dirname "$state")"
+        printf 'Remote host: %s\n  project: %s\n  metadata: %s\n  container: %s\n  image: %s\n  legacy volume: molt-cache-%s\n' "$PROJECT_HOST" "$PROJECT_REMOTE_PATH" "$PROJECT_REMOTE_META" "$PROJECT_CONTAINER" "$PROJECT_IMAGE" "$PROJECT_ID"
+      done
+      for state in "$MOLT_HOME/state/remotes"/*/host; do
+        [[ -f "$state" ]] || continue
+        printf 'Remote host: %s\n  root: %s\n' "$(read_value "$state")" "$(read_value "$(dirname "$state")/root")"
+      done
+      ;;
+    local-down)
+      molt_stop_workers || exit 1
+      molt_stop_daemon || exit 1
+      for state in "$MOLT_HOME/state/ssh"/c-*; do
+        [[ -S "$state" ]] || continue
+        # The socket itself identifies the owned connection, independent of configuration.
+        (cd "$MOLT_HOME/state/ssh" && command ssh -S "./$(basename "$state")" -O exit ignored-host) || exit 1
+      done
+      ;;
     logs) cmd_logs "$@" ;;
     review-env) cmd_review_env "$@" ;;
     commit-env) commit_generated_env "$(repo_root "${1:-.}")" ;;

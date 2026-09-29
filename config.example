@@ -3,8 +3,7 @@
 
 MOLT_HOST=oci-dev
 MOLT_ROOT="$HOME/src"
-MOLT_REMOTE_ROOT='$HOME/molt/projects'       # expanded on the VM
-MOLT_REMOTE_META_ROOT='$HOME/molt/meta'      # expanded on the VM
+MOLT_REMOTE_HOME='$HOME/molt'                # one owned root, expanded on the VM
 
 # Each project gets a deterministic OpenCode port in this range on the VM.
 MOLT_OPENCODE_BASE_PORT=4100

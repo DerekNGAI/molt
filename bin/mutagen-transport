@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Mutagen's supported MUTAGEN_SSH_PATH hook, for Linux SSH endpoints.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+source "$HERE/_molt.sh"
+: "${MOLT_HOME:?}"
+kind="$(basename "$0")"
+args=("$@")
+count=${#args[@]}
+[[ "$count" -ge 2 ]] || exit 2
+target="${args[$((count-2))]}"
+command="${args[$((count-1))]}"
+if [[ "$kind" == scp ]]; then target="${command%%:*}"; fi
+record="$MOLT_HOME/state/remotes/$(molt_host_key "$target")"
+[[ -f "$record/host" && "$(<"$record/host")" == "$target" ]] || {
+  molt_error "no contained remote registered for $target"; exit 1;
+}
+root="$(<"$record/root")"
+remote_home="$root/state/home"
+prefix="test \"\$(cat $(printf '%q' "$root/.install-manifest"))\" = $(printf '%q' "$MOLT_INSTALL_ID") && cd $(printf '%q' "$remote_home") && export HOME=$(printf '%q' "$remote_home") MUTAGEN_DATA_DIRECTORY=$(printf '%q' "$remote_home/.mutagen") TMPDIR=$(printf '%q' "$root/state/tmp") && "
+if [[ "$kind" == ssh ]]; then
+  args[$((count-1))]="$prefix$command"
+  molt_ssh "${args[@]}"
+elif [[ "$kind" == scp ]]; then
+  source_file="${args[$((count-2))]}"
+  name="${command#*:}"
+  [[ "$name" =~ ^\.mutagen-agent[a-zA-Z0-9-]+$ && -f "$source_file" ]] || exit 2
+  # Copy over the owned SSH connection; never stage an agent in the VM home.
+  molt_ssh "$target" "${prefix}{ umask 077; cat >$(printf '%q' "$name") && chmod 700 $(printf '%q' "$name"); }" <"$source_file"
+else exit 2; fi
