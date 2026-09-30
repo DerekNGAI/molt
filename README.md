@@ -31,6 +31,7 @@ Mac shell    ── SSH and port forwarding ────────────
 - Git
 - A VM address and an initial working SSH login (key, SSH agent, or password)
 - `curl`, `tar`, `unzip`, and `shasum` for private dependency downloads
+- Perl (included with macOS) for reading SSH aliases and included configurations
 - [Mutagen](https://mutagen.io/) 0.18.1 and [OpenCode](https://opencode.ai/)
   can be supplied externally; otherwise the installer downloads private copies
 - [Gum](https://github.com/charmbracelet/gum) 2.0.2 powers the terminal interface;
@@ -53,7 +54,8 @@ Double-click **`MOLT.command`** in this checkout, or launch the installer:
 ```
 
 An interactive terminal opens the installation wizard. Choose an installation
-folder, then follow **Guided setup** to:
+folder. A fresh installation starts with no connection configured. Follow
+**Guided setup** to:
 
 1. Enter the VM address, username, port, and identity file, or select an existing
    SSH alias. The console writes a private SSH configuration for you.
@@ -118,11 +120,21 @@ The console manages the usual settings without editing files. Advanced users
 can edit `~/.molt/config`, created from [config.example](config.example):
 
 ```bash
-MOLT_HOST=oci-dev
+MOLT_HOST=''
 MOLT_ROOT="$HOME/src"
 MOLT_REMOTE_HOME='$HOME/molt'
 MOLT_OPENCODE_BASE_PORT=4100
 ```
+
+`MOLT_HOST` starts empty. Choose a connection in the console to set it to a saved
+profile name or an existing SSH alias. A connection name needs an SSH configuration
+mapping it to your VM address; the name alone does not create a connection.
+
+**Connections → Use an existing SSH alias** lists named `Host` entries from the
+SSH configuration and its included files, showing each alias's effective username,
+hostname, and port. Wildcard rules such as `Host *` are defaults, so they are not
+selectable entries. Choose **Add a connection** if your VM has no named entry.
+The same list is available with `molt connection aliases`.
 
 The remote root uses `$HOME` on the VM. All child directories derive from it.
 Each project receives a stable directory and an OpenCode port derived from its

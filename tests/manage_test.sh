@@ -36,6 +36,28 @@ test_config() (
   cmp -s "$TMP/config.before" "$MOLT_HOME/config" || fail 'invalid setting changed configuration'
 )
 
+test_empty_connection() (
+  install empty-connection
+  [[ -z "$("$MOLT" config get MOLT_HOST)" ]] || fail 'fresh installation selected an example host'
+  "$MOLT" config set MOLT_ROOT "$HOME"
+  [[ -z "$("$MOLT" config get MOLT_HOST)" ]] || fail 'empty connection fell back to an example host'
+  [[ -z "$("$MOLT" connection list)" ]] || fail 'fresh installation has saved connections'
+  "$MOLT" connection cleanup
+  "$MOLT" status | grep -Fq 'no connection configured' || fail 'status did not explain the empty connection'
+  local output action
+  for action in setup bootstrap ssh doctor 'connection login'; do
+    if output="$("$MOLT" $action 2>&1)"; then fail "$action accepted an empty connection"; fi
+    [[ "$output" == *'no connection configured'* ]] || fail "$action did not explain the missing connection"
+  done
+  mkdir -p "$TMP/unconnected-project"
+  git -C "$TMP/unconnected-project" init -q
+  if "$MOLT" register "$TMP/unconnected-project"; then fail 'registered a project without a connection'; fi
+  local state
+  for state in "$MOLT_HOME/projects"/*/path; do [[ ! -f "$state" ]] || fail 'missing connection left a project record'; done
+  "$MOLT_HOME/bin/molt-uninstall" --yes
+  [[ ! -e "$MOLT_HOME" ]] || fail 'fresh installation could not be removed without a connection'
+)
+
 test_connections() (
   install connections
   mkdir -p "$HOME/.ssh"
@@ -46,6 +68,8 @@ test_connections() (
   "$MOLT" connection add dev vm.example ubuntu 2222 "$key"
   "$MOLT" connection use dev
   [[ "$("$MOLT" config get MOLT_HOST)" == dev ]] || fail 'did not select the SSH profile'
+  /bin/bash "$ROOT/install.sh" --non-interactive >"$TMP/upgrade.log" 2>&1
+  [[ "$("$MOLT" config get MOLT_HOST)" == dev ]] || fail 'upgrade discarded the selected connection'
   local output
   output="$(/usr/bin/ssh -G -F "$MOLT_HOME/state/ssh/config" dev 2>/dev/null)"
   [[ "$output" == *'hostname vm.example'* && "$output" == *'port 2222'* && "$output" == *"identityfile $key"* ]] || fail 'invalid managed SSH configuration'
@@ -63,6 +87,55 @@ test_connections() (
   "$MOLT" connection use other
   /usr/bin/ssh -G -F "$MOLT_HOME/state/ssh/config" dev 2>/dev/null | grep -qx 'hostname vm.example' || fail 'switching hosts lost the recorded connection'
   "$MOLT" connection remove other
+  [[ "$("$MOLT" config get MOLT_HOST)" == dev ]] || fail 'removal did not select the remaining connection'
+  rm -rf "$record"
+  "$MOLT" connection remove dev
+  [[ -z "$("$MOLT" config get MOLT_HOST)" ]] || fail 'removing the last connection left a stale selection'
+  [[ -z "$("$MOLT" connection list)" ]] || fail 'could not list connections after removing the last profile'
+)
+
+test_connection_aliases() (
+  export HOME="$TMP/aliases-home" MOLT_USER_HOME="$TMP/aliases-home"
+  mkdir -p "$HOME"
+  install aliases
+  local output expected
+  output="$("$MOLT" connection aliases)" || fail 'missing SSH configuration failed discovery'
+  [[ -z "$output" ]] || fail 'missing SSH configuration produced aliases'
+  mkdir -p "$HOME/.ssh/config.d with spaces"
+  cat >"$HOME/.ssh/config" <<CONFIG
+Host = "oracle-dev" oracle-short # same destination
+  HostName oracle-dev
+  User ubuntu
+Host *
+  Include "$HOME/.ssh/config.d with spaces/*.conf"
+Host oracle-dev
+  User ignored
+Host * !blocked
+  Port 2222
+Host *.wild !negated
+  User fallback
+CONFIG
+  printf 'Include "%s/.ssh/nested.conf"\nhOsT included\n  HostName included.example\n  User remote\n  Port 2200\n' "$HOME" >"$HOME/.ssh/config.d with spaces/dev.conf"
+  printf 'Host nested\n  HostName nested.example\n  User nested-user\n' >"$HOME/.ssh/nested.conf"
+  cp "$HOME/.ssh/config" "$TMP/aliases.before"
+  expected=$'oracle-dev\tubuntu@oracle-dev:2222\noracle-short\tubuntu@oracle-dev:2222\nnested\tnested-user@nested.example:2222\nincluded\tremote@included.example:2200'
+  output="$("$MOLT" connection aliases)" || fail 'could not discover SSH aliases'
+  [[ "$output" == "$expected" ]] || fail "unexpected SSH aliases: $output"
+  [[ -z "$("$MOLT" config get MOLT_HOST)" ]] || fail 'alias discovery selected a connection'
+  "$MOLT" connection use oracle-dev
+  [[ "$("$MOLT" connection aliases)" == "$expected" ]] || fail 'managed SSH configuration lost included aliases'
+  cmp -s "$TMP/aliases.before" "$HOME/.ssh/config" || fail 'alias discovery modified external configuration'
+  "$MOLT" config set MOLT_SSH_CONFIG "$HOME/.ssh/nested.conf"
+  [[ "$("$MOLT" connection aliases)" == $'nested\tnested-user@nested.example:22' ]] || fail 'alias discovery ignored the configured SSH file'
+  printf 'Include nested.conf "~/.ssh/config.d with spaces/*.conf"\n' >"$HOME/.ssh/relative.conf"
+  "$MOLT" config set MOLT_SSH_CONFIG "$HOME/.ssh/relative.conf"
+  output="$("$MOLT" connection aliases)" || fail 'relative/tilde include discovery failed'
+  [[ "$output" == $'nested\tnested-user@nested.example:22\nincluded\tremote@included.example:2200' ]] || fail "relative/tilde includes did not follow OpenSSH home-directory semantics: $output"
+  "$MOLT" config set MOLT_SSH_CONFIG "$HOME/.ssh/nested.conf"
+  printf '\nInvalidMoltOption yes\n' >>"$HOME/.ssh/nested.conf"
+  if "$MOLT" connection aliases; then fail 'invalid SSH configuration produced selectable aliases'; fi
+  printf 'Host recursive\n  User ubuntu\nInclude "%s/.ssh/nested.conf"\n' "$HOME" >"$HOME/.ssh/nested.conf"
+  if "$MOLT" connection aliases; then fail 'recursive SSH configuration produced selectable aliases'; fi
 )
 
 test_shell_integration() (
@@ -111,6 +184,7 @@ CP
 
 test_project_management() (
   install projects
+  "$MOLT" config set MOLT_HOST test-vm
   mkdir -p "$TMP/project"
   git -C "$TMP/project" init -q
   "$MOLT" register "$TMP/project" >/dev/null
@@ -173,7 +247,7 @@ test_ssh_paths() (
   [[ "$output" == *"$expected"* ]] || fail 'SSH interpreted spaces/percent tokens instead of the contained known-hosts path'
 )
 
-for test in ${*:-test_config test_connections test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_gum_install test_install_options test_action_capture test_ssh_paths}; do
+for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_gum_install test_install_options test_action_capture test_ssh_paths}; do
   "$test"
   printf 'PASS: %s\n' "$test"
 done

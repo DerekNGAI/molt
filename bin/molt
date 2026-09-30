@@ -20,7 +20,7 @@ elif [[ -f "$SCRIPT_DIR/../config.example" ]]; then
   source "$SCRIPT_DIR/../config.example"
 fi
 
-MOLT_HOST="${MOLT_HOST:-oci-dev}"
+MOLT_HOST="${MOLT_HOST:-}"
 MOLT_ROOT="${MOLT_ROOT:-$HOME/src}"
 MOLT_REMOTE_HOME="${MOLT_REMOTE_HOME:-\$HOME/molt}"
 MOLT_OPENCODE_PASSWORD_FILE="${MOLT_OPENCODE_PASSWORD_FILE:-$MOLT_HOME/opencode.password}"
@@ -35,11 +35,12 @@ MOLT_INSTALL_ID="$(molt_value "$MOLT_HOME/.install-manifest" INSTALL_ID 2>/dev/n
 export MOLT_INSTALL_ID
 export MOLT_SSH_CONFIG="${MOLT_SSH_CONFIG:-}"
 mutagen() { molt_mutagen "$@"; }
-ssh() { molt_ssh "$@"; }
+ssh() { need_connection "$MOLT_HOST"; molt_ssh "$@"; }
 
 log() { printf 'molt: %s\n' "$*" >&2; }
 die() { log "$*"; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing $1"; }
+need_connection() { [[ -n "$1" ]] || die 'no connection configured; choose Connections in MOLT or run molt connection use <alias>'; }
 
 quote_remote() {
   local out="" arg
@@ -205,6 +206,7 @@ register_project() {
   id="$(project_id_for_path "$path")"
   state="$(project_state_dir "$path")"
   if [[ -f "$state/path" ]]; then load_project_state "$state"; return; fi
+  need_connection "$MOLT_CONFIG_HOST"
   [[ ! -L "$state" ]] || die 'symlinked project state directory'
   mkdir -p "$state"
 
@@ -279,7 +281,7 @@ set_remote_paths() {
   save_project
 }
 
-ssh_ok() { ssh -O check "$MOLT_HOST" >/dev/null 2>&1; }
+ssh_ok() { [[ -n "$MOLT_HOST" ]] && ssh -O check "$MOLT_HOST" >/dev/null 2>&1; }
 
 ssh_up() {
   need ssh
@@ -846,7 +848,8 @@ attach_loaded_project() {
 
 cmd_status() {
   local state path active running
-  if ssh_ok; then printf 'molt: ssh %s connected\n' "$MOLT_HOST"; else printf 'molt: ssh %s disconnected\n' "$MOLT_HOST"; fi
+  if [[ -z "$MOLT_HOST" ]]; then printf 'molt: no connection configured\n';
+  elif ssh_ok; then printf 'molt: ssh %s connected\n' "$MOLT_HOST"; else printf 'molt: ssh %s disconnected\n' "$MOLT_HOST"; fi
   for state in "$MOLT_PROJECTS_HOME"/*/path; do
     [[ -f "$state" ]] || continue
     path="$(read_value "$state")"
@@ -865,6 +868,7 @@ cmd_status() {
 
 cmd_doctor() {
   local failed=0
+  need_connection "$MOLT_HOST"
   for command in git ssh; do
     if command -v "$command" >/dev/null 2>&1; then printf 'ok   %s\n' "$command"; else printf 'miss %s\n' "$command"; failed=1; fi
   done

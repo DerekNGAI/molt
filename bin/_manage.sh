@@ -28,7 +28,7 @@ cmd_config() {
       molt_owned_home || die 'install molt before saving settings'
       valid_line "$value" || die 'settings cannot contain control characters'
       case "$key" in
-        MOLT_HOST) valid_alias "$value" || die 'invalid SSH host alias' ;;
+        MOLT_HOST) [[ -z "$value" ]] || valid_alias "$value" || die 'invalid SSH host alias' ;;
         MOLT_ROOT) value="$(canonical_path "$value")" ;;
         MOLT_SSH_CONFIG) [[ -f "$value" ]] || die 'SSH configuration file not found'; value="$(molt_canonical "$value")" ;;
         MOLT_REMOTE_HOME)
@@ -99,12 +99,61 @@ connection_config() {
   cmd_config set MOLT_SSH_CONFIG "$file"
 }
 
+connection_aliases() {
+  local config="${MOLT_SSH_CONFIG:-${MOLT_USER_HOME:-$HOME}/.ssh/config}" aliases alias settings detail
+  [[ -f "$config" ]] || return 0
+  # Discover literal names; OpenSSH resolves their effective settings below.
+  aliases="$(/usr/bin/perl -MText::ParseWords=shellwords -MFile::Glob=bsd_glob,GLOB_TILDE -MCwd=abs_path -e '
+    my ($config) = @ARGV;
+    my (%files, %hosts);
+    sub scan {
+      my ($path, $depth) = @_;
+      $path = abs_path($path);
+      return unless defined $path && -f $path;
+      return if $files{$path}++;
+      die "Too many SSH configuration includes\n" if $depth > 16;
+      open my $file, "<", $path or die "Cannot read SSH configuration $path: $!\n";
+      while (my $line = <$file>) {
+        next unless $line =~ /^\s*(Host|Include)(?:\s*=\s*|\s+)(.*)/i;
+        my ($directive, $args) = (lc($1), $2);
+        ($args) = $args =~ /^((?:[^"#\\]|\\.|"(?:[^"\\]|\\.)*")*)/;
+        for my $value (shellwords($args)) {
+          if ($directive eq "host") {
+            next if $value =~ /[!*?]/ || $hosts{$value}++;
+            print "$value\n";
+          } else {
+            $value =~ s/\$\{(\w+)\}/exists $ENV{$1} ? $ENV{$1} : "\${$1}"/ge;
+            $value = "~/.ssh/$value" unless $value =~ m{^/|^~};
+            scan($_, $depth + 1) for bsd_glob($value, GLOB_TILDE);
+          }
+        }
+      }
+    }
+    scan($config, 0);
+  ' "$config")" || return 1
+  [[ -n "$aliases" ]] || return 0
+  while IFS= read -r alias; do
+    valid_alias "$alias" || continue
+    settings="$(command ssh -G -T -F "$config" "$alias")" || return 1
+    detail="$(printf '%s\n' "$settings" | awk '
+      $1 == "user" { user=$2 } $1 == "hostname" { host=$2 } $1 == "port" { port=$2 }
+      END { printf "%s@%s:%s", user, host, port }
+    ')"
+    valid_line "$detail" && [[ "$detail" != *'|'* ]] || die "cannot display SSH settings for $alias"
+    printf '%s\t%s\n' "$alias" "$detail"
+  done <<<"$aliases"
+}
+
 cmd_connection() {
   local action="${1:-list}" alias="${2:-$MOLT_CONFIG_HOST}" profile hostname user port identity tmp
   molt_owned_home || die 'install molt before managing connections'
-  valid_alias "$alias" || die 'invalid SSH host alias'
+  case "$action" in
+    list|aliases|cleanup) ;;
+    *) need_connection "$alias"; valid_alias "$alias" || die 'invalid SSH host alias' ;;
+  esac
   profile="$MOLT_HOME/state/ssh/profiles/$alias"
   case "$action" in
+    aliases) connection_aliases ;;
     list)
       for profile in "$MOLT_HOME/state/ssh/profiles"/*/hostname; do
         [[ -f "$profile" ]] || continue
@@ -144,11 +193,13 @@ cmd_connection() {
       managed_file "$profile"
       rm -rf -- "$profile"
       if [[ "$alias" == "$MOLT_CONFIG_HOST" ]]; then
-        for tmp in "$MOLT_HOME/state/ssh/profiles"/*/hostname; do
-          [[ -f "$tmp" ]] || continue
-          cmd_config set MOLT_HOST "$(basename "${tmp%/*}")"
+        tmp=''
+        for profile in "$MOLT_HOME/state/ssh/profiles"/*/hostname; do
+          [[ -f "$profile" ]] || continue
+          tmp="$(basename "${profile%/*}")"
           break
         done
+        cmd_config set MOLT_HOST "$tmp"
       fi
       connection_config ;;
     keygen)
@@ -197,7 +248,7 @@ cmd_connection() {
     login) MOLT_HOST="$alias"; ssh -o BatchMode=no -o StrictHostKeyChecking=ask "$alias" true ;;
     test) MOLT_HOST="$alias"; ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$alias" 'printf "SSH connection ready\n"' ;;
     check) MOLT_HOST="$alias"; ssh_ok ;;
-    *) die 'molt connection [list|add|use|remove|login|test|check|keygen|authorize|revoke]' ;;
+    *) die 'molt connection [list|aliases|add|use|remove|login|test|check|keygen|authorize|revoke]' ;;
   esac
 }
 

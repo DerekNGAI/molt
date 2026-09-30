@@ -19,6 +19,53 @@ menu "Welcome to MOLT"
 down 1
 enter
 menu "MOLT Control Center"
+# Failed connection login keeps Guided setup at the connection step.
+down 3
+enter
+menu "Guided setup"
+enter
+see "Connect to unreachable-vm"
+see "failed"
+enter
+menu "Guided setup"
+escape
+menu "MOLT Control Center"
+# Existing aliases are selected from a menu with resolved connection details.
+down 2
+enter
+menu "Connections"
+down 1
+enter
+see "Existing SSH aliases"
+see "ubuntu@vm.example:22"
+see "developer@alternate.example:2222"
+see "submit"
+escape
+menu "Connections"
+if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_HOST] != "unreachable-vm"} { puts stderr "FAIL: cancelled alias picker changed the connection"; exit 1 }
+down 1
+enter
+menu "Existing SSH aliases"
+down 1
+enter
+menu "Completed"
+enter
+see "Connect to alternate-vm"
+see "failed"
+enter
+menu "Selected connection: alternate-vm"
+if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_HOST] != "alternate-vm"} { puts stderr "FAIL: alias picker did not save the selected connection"; exit 1 }
+# An empty configuration explains how to create a connection.
+file delete "$env(HOME)/.ssh/config"
+down 1
+enter
+menu "No SSH aliases found"
+enter
+menu "Connection name"
+escape
+menu "Connections"
+escape
+menu "MOLT Control Center"
 # Cancelling an in-flight command stops its SSH child and restores the menu.
 set marker [open "$env(TUI_TMP)/hold-ssh" w]
 close $marker

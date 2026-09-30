@@ -1,7 +1,7 @@
 # Copy to ~/.molt/config and edit.
 # Sourced by molt and its shims. Do not put secrets in this file.
 
-MOLT_HOST=oci-dev
+MOLT_HOST=''                               # select a connection in the console
 MOLT_ROOT="$HOME/src"
 MOLT_REMOTE_HOME='$HOME/molt'                # one owned root, expanded on the VM
 

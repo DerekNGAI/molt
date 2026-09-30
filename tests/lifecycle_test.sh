@@ -257,6 +257,7 @@ EOF
 test_offline_uninstall() (
   export MOLT_HOME="$HOME/offline"
   install
+  "$MOLT_HOME/bin/molt" config set MOLT_HOST test-vm
   mkdir -p "$TMP/repo"
   git -C "$TMP/repo" init -q
   "$MOLT_HOME/bin/molt" register "$TMP/repo" >/dev/null
@@ -482,6 +483,7 @@ GROUP
   chmod +x "$TEST_VM_BIN/"*
   export PATH="$TEST_VM_BIN:$PATH"
   install
+  "$MOLT_HOME/bin/molt" config set MOLT_HOST test-vm
   "$MOLT_HOME/bin/molt" config set MOLT_REMOTE_HOME "$TEST_REMOTE_HOME"
   if "$MOLT_HOME/bin/molt" bootstrap; then fail 'accepted the VM home as the workspace'; fi
   for record in "$MOLT_HOME/state/remotes"/*/host; do [[ ! -f "$record" ]] || fail 'invalid workspace stranded a cleanup record'; done
@@ -492,6 +494,7 @@ GROUP
   absent "$TEST_REMOTE_HOME/molt"
   export FAIL_APT=0
   install
+  "$MOLT_HOME/bin/molt" config set MOLT_HOST test-vm
   "$MOLT_HOME/bin/molt" bootstrap
   [[ -f "$TEST_REMOTE_HOME/molt/.install-manifest" && -f "$TEST_REMOTE_HOME/group" ]] || fail 'VM was not prepared'
   "$MOLT_HOME/bin/molt" bootstrap

@@ -10,6 +10,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 export MOLT_HOME="$TMP/home"
 export PATH="$ROOT/bin:$PATH"
 mkdir -p "$MOLT_HOME" "$TMP/repos/app"
+printf 'MOLT_HOST=test-vm\n' >"$MOLT_HOME/config"
 git -C "$TMP/repos/app" init -q
 printf '{"name":"app","packageManager":"pnpm@9.0.0"}\n' >"$TMP/repos/app/package.json"
 touch "$TMP/repos/app/pnpm-lock.yaml"

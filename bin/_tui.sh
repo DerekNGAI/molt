@@ -107,7 +107,7 @@ tui_terminal() {
   printf '\nMOLT / %s\n\n' "$title"
   trap ':' INT
   if "$@"; then rc=0; printf '\nCompleted: %s\n' "$title";
-  else rc=$?; printf '\n%s failed (exit %s). Saved records are available for retry.\n' "$title" "$rc"; fi
+  else rc=$?; printf '\n%s failed (exit %s). Return to MOLT to review the settings and retry.\n' "$title" "$rc"; fi
   trap 'exit 130' INT
   # After removal, the loaded shell functions can restore the terminal without Gum.
   if [[ "$title" == 'Uninstall MOLT' && ! -d "$MOLT_HOME" ]]; then return "$rc"; fi
@@ -178,15 +178,32 @@ tui_connection_form() {
 }
 
 tui_connections() {
-  local action alias profile choice
+  local action alias profile choice output detail description
   local -a choices
   while :; do
     tui_reload
-    action="$(tui_choose 'Connections' "Selected connection: $MOLT_HOST" 'Add / edit a connection|add' 'Use an existing SSH alias|external' 'Saved connections|saved' 'Back|back')" || return 0
+    action="$(tui_choose 'Connections' "Selected connection: ${MOLT_HOST:-none}" 'Add / edit a connection|add' 'Use an existing SSH alias|external' 'Saved connections|saved' 'Back|back')" || return 0
     case "$action" in
       add) tui_connection_form ;;
       external)
-        alias="$(tui_input 'Existing SSH alias' "$MOLT_HOST")" || continue
+        if ! output="$("$TUI_BIN" connection aliases 2>&1)"; then
+          tui_message 'SSH configuration' "$output"
+          continue
+        fi
+        choices=()
+        description='Choose a configured alias. Each entry shows its SSH username, destination, and port.'
+        if [[ -n "$output" ]]; then
+          while IFS=$'\t' read -r alias detail; do
+            choices+=("$alias  ($detail)|alias:$alias")
+          done <<<"$output"
+        else description='No SSH aliases found. Add a connection or define a Host entry in your SSH configuration.'; fi
+        choices+=('Add a connection|add' 'Back|back')
+        alias="$(tui_choose 'Existing SSH aliases' "$description" "${choices[@]}")" || continue
+        case "$alias" in
+          back) continue ;;
+          add) tui_connection_form; continue ;;
+        esac
+        alias="${alias#alias:}"
         tui_run 'Select SSH connection' "$TUI_BIN" connection use "$alias" || continue
         tui_reload
         tui_connect "$alias" || true ;;
@@ -215,10 +232,23 @@ tui_connections() {
 }
 
 tui_setup() {
-  local choice folder remote
-  choice="$(tui_choose 'Guided setup' 'The console runs on this Mac. It prepares your VM through SSH.' "Use selected connection ($MOLT_HOST)|current" 'Configure a connection|connection' 'Back|back')" || return 0
-  case "$choice" in connection) tui_connections ;; current) ;; *) return 0 ;; esac
-  tui_reload
+  local choice folder remote description
+  local -a choices
+  while :; do
+    tui_reload
+    description='No connection configured. Enter your VM address and SSH login to get started.'
+    choices=('Configure a connection|connection' 'Back|back')
+    if [[ -n "$MOLT_HOST" ]]; then
+      description='The console runs on this Mac. It prepares your VM through SSH.'
+      choices=("Use configured connection ($MOLT_HOST)|current" "${choices[@]}")
+    fi
+    choice="$(tui_choose 'Guided setup' "$description" "${choices[@]}")" || return 0
+    case "$choice" in
+      connection) tui_connections ;;
+      current) if tui_connect; then break; fi ;;
+      *) return 0 ;;
+    esac
+  done
   folder="$MOLT_ROOT"
   if [[ ! -d "$folder" ]]; then folder="${MOLT_USER_HOME:-$HOME}"; fi
   folder="$(tui_input 'Project folder' "$folder")" || return 0
@@ -226,7 +256,6 @@ tui_setup() {
   remote="$(tui_input 'Remote workspace' "$MOLT_REMOTE_HOME")" || return 0
   tui_run 'Save remote workspace' "$TUI_BIN" config set MOLT_REMOTE_HOME "$remote" || return 0
   tui_reload
-  tui_connect || return 0
   tui_screen 'Prepare VM'
   tui_confirm "Prepare $MOLT_HOST, installing Docker and granting this user access if needed? Administrator authentication may be required." || return 0
   tui_terminal 'Prepare VM' "$TUI_BIN" bootstrap || return 0
@@ -464,7 +493,7 @@ tui_main() (
       count=$((count + 1))
       [[ "$(read_value "$state")" != 1 ]] || running=$((running + 1))
     done
-    description="Installation: $MOLT_HOME"$'\n'"Connection: $MOLT_HOST / Projects: $count / Active: $running"
+    description="Installation: $MOLT_HOME"$'\n'"Connection: ${MOLT_HOST:-none} / Projects: $count / Active: $running"
     action="$(tui_choose 'MOLT Control Center' "$description" 'Overview|overview' 'Projects|projects' 'Connections|connections' 'Guided setup|setup' 'OpenCode|opencode' 'Settings|settings' 'Maintenance|maintenance' 'Uninstall|uninstall' 'Quit|quit')" || exit 0
     case "$action" in
       overview) tui_run 'Overview' "$TUI_BIN" status || true ;;

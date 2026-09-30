@@ -15,6 +15,7 @@ proc enter {} { global spawn_id; send -- "\r"; after 120 }
 proc down {count} { global spawn_id; for {set i 0} {$i < $count} {incr i} {send -- "\033\[B"; after 70} }
 proc yes {} { global spawn_id; see "submit"; send -- "y"; after 120 }
 proc value {text} { global spawn_id; see "submit"; send -- "\025$text\r"; after 120 }
+proc escape {} { global spawn_id; send -- "\033"; after 250 }
 spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/bash "$env(TUI_ROOT)/install.sh" --interactive
 stty rows 30 columns 100 < $spawn_out(slave,name)
 menu "Install folder"
@@ -25,8 +26,23 @@ see "Completed: Install MOLT"
 enter
 menu "Welcome to MOLT"
 enter
-menu "Guided setup"
-down 1
+see "Guided setup"
+menu "No connection configured"
+enter
+menu "Connections"
+# Cancelling connection setup must return to Guided setup, before folder prompts.
+escape
+see "Guided setup"
+menu "No connection configured"
+enter
+menu "Connections"
+enter
+menu "Connection name"
+escape
+menu "Connections"
+escape
+see "Guided setup"
+menu "No connection configured"
 enter
 menu "Connections"
 enter
@@ -48,6 +64,9 @@ see "Completed: Connect to molt-vm"
 enter
 menu "Connections"
 down 3
+enter
+see "Guided setup"
+menu "Use configured connection (molt-vm)"
 enter
 see "Project folder"
 value "$env(TUI_TMP)/repos"

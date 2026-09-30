@@ -17,6 +17,9 @@ if [[ -f "$TUI_TMP/hold-ssh" && "$*" == *'-O check'* ]]; then
   printf '%s\n' "$$" >"$TUI_TMP/held.pid"
   sleep 60 & wait
 fi
+for arg in "$@"; do
+  if [[ "$arg" == -G ]]; then exec /usr/bin/ssh "$@"; fi
+done
 exit 255
 SSH
 chmod +x "$TMP/bin/"*
@@ -28,7 +31,11 @@ export PATH="$TMP/bin:/usr/bin:/bin"
 /bin/bash "$ROOT/install.sh" --non-interactive >/dev/null
 git -C "$TMP/repos/app" init -q
 "$MOLT_HOME/bin/molt" config set MOLT_ROOT "$TMP/repos"
+"$MOLT_HOME/bin/molt" config set MOLT_HOST unreachable-vm
 "$MOLT_HOME/bin/molt" register "$TMP/repos/app" >/dev/null
+mkdir -p "$HOME/.ssh"
+printf 'Include "%s/aliases.conf"\n' "$TMP" >"$HOME/.ssh/config"
+printf 'Host unreachable-vm\n  HostName vm.example\n  User ubuntu\nHost alternate-vm\n  HostName alternate.example\n  User developer\n  Port 2222\n' >"$TMP/aliases.conf"
 export TUI_ROOT="$ROOT" TUI_TMP="$TMP"
 /usr/bin/expect "$ROOT/tests/tui_test.exp"
 [[ ! -e "$MOLT_HOME" ]] || { printf 'FAIL: TUI uninstall left the installation\n' >&2; exit 1; }
