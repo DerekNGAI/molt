@@ -27,15 +27,18 @@ if [[ "$YES" == 0 ]]; then
   [[ "$answer" == y || "$answer" == Y ]] || exit 0
 fi
 export MOLT_HOME
+molt_stop_workers || { molt_error 'could not stop owned local processes'; exit 1; }
+# Keep Mutagen and SSH available through synchronization, VM, and key cleanup.
+export MOLT_UNINSTALLING=1
 if [[ "$LOCAL_ONLY" == 1 ]]; then
   printf 'Remote resources left for manual cleanup:\n'
   "$MOLT_HOME/bin/molt" cleanup-inventory
 else
-  "$MOLT_HOME/bin/molt" local-down || exit 1
   MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset --all || {
     molt_error 'cleanup failed; installation and retry records preserved'; exit 1;
   }
   if [[ "$UNDO_VM" == 1 ]]; then
+    "$MOLT_HOME/bin/molt" remove-remote-roots --keep-root || { molt_error 'shared cleanup failed; installation and retry records retained'; exit 1; }
     "$MOLT_HOME/bin/molt" unprepare-vm || { molt_error 'VM preparation cleanup failed; installation retained'; exit 1; }
   fi
   "$MOLT_HOME/bin/molt" remove-remote-roots || {

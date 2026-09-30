@@ -42,7 +42,7 @@ cat >"$MOLT_HOME/state/ssh/config" <<EOF
 Host molt-test
   HostName 127.0.0.1
   Port $port
-  User root
+  User molt-test
   IdentityFile "$MOLT_HOME/state/ssh/id_ed25519"
   IdentitiesOnly yes
   StrictHostKeyChecking accept-new
@@ -59,7 +59,7 @@ printf '{"name":"containment-test"}\n' >"$TMP/repo/package.json"
 "$MOLT_HOME/bin/molt" start "$TMP/repo"
 [[ ! -e "$TMP/repo/devenv.nix" ]] || fail 'start modified the Mac checkout'
 id="$("$MOLT_HOME/bin/molt" project-id "$TMP/repo")"
-[[ "$("$DOCKER" exec "$name" cat "/root/molt/projects/$id/package.json")" == "$(cat "$TMP/repo/package.json")" ]] || fail 'project did not synchronize'
+[[ "$("$DOCKER" exec "$name" cat "/home/molt-test/molt/projects/$id/package.json")" == "$(cat "$TMP/repo/package.json")" ]] || fail 'project did not synchronize'
 (cd "$TMP/repo" && "$MOLT_HOME/bin/molt" run node --version)
 "$MOLT_HOME/bin/molt" client auth list
 server_port="$(cat "$MOLT_HOME/projects/$id/opencode_port")"
@@ -72,9 +72,16 @@ done
 [[ "$healthy" == 1 ]] || fail 'OpenCode server did not become healthy'
 "$MOLT_HOME/bin/molt" stop "$TMP/repo"
 "$MOLT_HOME/bin/molt" start "$TMP/repo"
-"$DOCKER" exec "$name" sh -c 'test ! -e /root/.mutagen && test ! -e /root/.molt && test ! -e /root/.config/opencode'
+"$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/.mutagen && test ! -e /home/molt-test/.molt && test ! -e /home/molt-test/.config/opencode'
 [[ ! -e "$HOME/.mutagen" && ! -e "$HOME/.opencode" && ! -e "$HOME/.config" ]] || fail 'global tool state was created on the Mac'
-"$MOLT_HOME/bin/molt-uninstall" --yes
+"$DOCKER" exec "$name" sh -c "mkdir -p /home/molt-test/molt/meta/$id/env/.devenv/protected && touch /home/molt-test/molt/meta/$id/env/.devenv/protected/file && chmod 700 /home/molt-test/molt/meta/$id/env/.devenv/protected"
+"$DOCKER" exec "$name" sh -c 'mkdir -p /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin && touch /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin/plugin.d.ts && chmod 700 /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin'
+"$MOLT_HOME/bin/molt-uninstall" --yes >"$TMP/uninstall.log" 2>&1 || { cat "$TMP/uninstall.log"; fail 'uninstall failed'; }
+grep -Fq 'using Docker to remove protected files' "$TMP/uninstall.log" || fail 'uninstall did not recover root-owned files'
+grep -Fq '/home/molt-test/molt/config' "$TMP/uninstall.log" || fail 'uninstall did not recover root-owned plugin dependencies'
+if grep -Fq 'Permission denied' "$TMP/uninstall.log"; then fail 'successful recovery printed deletion errors'; fi
+if grep -Fq 'Started Mutagen daemon' "$TMP/uninstall.log"; then fail 'uninstall restarted Mutagen'; fi
+if grep -Fq 'disabling multiplexing' "$TMP/uninstall.log"; then fail 'uninstall raced SSH shutdown'; fi
 [[ ! -e "$MOLT_HOME" ]] || fail 'local installation remains'
-"$DOCKER" exec "$name" sh -c 'test ! -e /root/molt && test -z "$(docker ps -aq --filter label=io.molt.installation)"'
+"$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/molt && test -z "$(docker ps -aq --filter label=io.molt.installation)"'
 printf 'molt integration tests: ok\n'

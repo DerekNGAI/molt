@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-lifecycle.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'chmod -R u+rwX "$TMP"; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/zsh"
 export HOME="$TMP/home" ZDOTDIR="$TMP/zsh" PATH="$TMP/bin:/usr/bin:/bin"
 export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/opencode"
@@ -13,6 +13,7 @@ export MOLT_GUM_BINARY="$TMP/bin/gum"
 cat >"$TMP/bin/mutagen" <<'TOOL'
 #!/usr/bin/env bash
 MUTAGEN_DATA_DIRECTORY="${MUTAGEN_DATA_DIRECTORY:-$HOME/.mutagen}"
+[[ -z "${TEST_EVENTS:-}" ]] || printf 'mutagen %s\n' "$*" >>"$TEST_EVENTS"
 case "$*" in
   version) printf '0.18.1\n' ;;
   'sync create'*)
@@ -34,7 +35,9 @@ case "$*" in
       [[ ! -f "$file" || "$(<"$file")" != "${3:-}" ]] || count=$((count+1))
     done
     [[ "$count" -le 1 ]] || { printf 'duplicate project sessions\n' >&2; exit 1; } ;;
-  'daemon stop') [[ "${FAIL_STOP:-0}" == 0 ]] || exit 1 ;;
+  'daemon stop')
+    [[ "${FAIL_STOP:-0}" == 0 ]] || exit 1
+    rm -f "$MUTAGEN_DATA_DIRECTORY/daemon/daemon.sock" ;;
 esac
 TOOL
 cat >"$TMP/bin/opencode" <<'TOOL'
@@ -284,8 +287,12 @@ test_remote_lifecycle() (
   cp "$TMP/bin/opencode" "$TMP/remote-bin/opencode"
   cat >"$TMP/remote-bin/ssh" <<'SSH'
 #!/usr/bin/env bash
+[[ -z "${TEST_EVENTS:-}" ]] || printf 'ssh %s\n' "$*" >>"$TEST_EVENTS"
 for arg in "$@"; do [[ "$arg" != -O ]] || exit 0; done
 last="${!#}"
+if [[ -n "${TEST_CLIENT_PID:-}" && "$last" == 'bash -s -- cleanup '* ]] && kill -0 "$TEST_CLIENT_PID" 2>/dev/null; then
+  printf 'cleanup started before stopping the client\n' >&2; exit 1
+fi
 HOME="$TEST_REMOTE_HOME" /bin/bash -c "$last"
 SSH
   cat >"$TMP/remote-bin/docker" <<'DOCKER'
@@ -303,7 +310,20 @@ case "$1 ${2:-}" in
   'build '*)
     [[ "${HOLD_BUILD:-0}" == 0 ]] || sleep 60
     shift; while [[ $# -gt 0 ]]; do if [[ "$1" == --tag ]]; then printf '%s\n' "$2" >"$TEST_DOCKER/image"; fi; shift; done ;;
-  'run '*) shift; while [[ $# -gt 0 ]]; do if [[ "$1" == --name ]]; then printf '%s\n' "$2" >"$TEST_DOCKER/container"; fi; shift; done ;;
+  'run '*)
+    shift
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == --name ]]; then printf '%s\n' "$2" >"$TEST_DOCKER/container"; fi
+      if [[ "$1" == --mount && "$2" == type=bind,src=*,dst=/cleanup ]]; then
+        path="${2#type=bind,src=}"; path="${path%,dst=/cleanup}"
+        [[ "${FAIL_HELPER:-0}" == 0 && "$path" != "${FAIL_HELPER_PATH:-}" ]] || { printf 'Docker cleanup helper failed\n' >&2; exit 1; }
+        printf '%s\n' "$path" >>"$TEST_DOCKER/helpers"
+        # Restore test-user permissions to simulate the helper's root access.
+        chmod -R u+rwX "$path"
+        rm -rf -- "$path/"* "$path/".[!.]* "$path/"..?*
+      fi
+      shift
+    done ;;
   'rm '*) [[ "${FAIL_DOCKER:-0}" == 0 ]] || exit 1; rm -f "$TEST_DOCKER/container" ;;
   'image rm') [[ "${FAIL_DOCKER:-0}" == 0 ]] || exit 1; rm -f "$TEST_DOCKER/image" ;;
   'exec '*) ;;
@@ -319,6 +339,11 @@ source "$TEST_ROOT/bin/_molt.sh"
 [[ "${1:-}" != -- ]] || shift
 molt_canonical "$1"
 REALPATH
+  cat >"$TMP/remote-bin/rmdir" <<'RMDIR'
+#!/usr/bin/env bash
+[[ "${FAIL_ROOT_RMDIR:-0}" != 1 || "${!#}" != "$TEST_REMOTE_HOME/molt" ]] || { printf 'injected root directory removal failure\n' >&2; exit 1; }
+exec /bin/rmdir "$@"
+RMDIR
   chmod +x "$TMP/remote-bin/"*
   export PATH="$TMP/remote-bin:/usr/bin:/bin"
   install
@@ -407,7 +432,71 @@ CASES
   wait "$starter" 2>/dev/null || true
   export HOLD_BUILD=0
   rm -rf "$TMP/remote-repo"
-  "$MOLT_HOME/bin/molt-uninstall" --yes
+  # Real directory permissions exercise the unprivileged rm on the test Mac.
+  # The Docker integration test covers files actually owned by root on Linux.
+  local protected daemon client
+  for protected in "$TEST_REMOTE_HOME/molt/meta/$id/env/.devenv" "$TEST_REMOTE_HOME/molt/cache/$id/data/opencode" "$TEST_REMOTE_HOME/molt/config/opencode/node_modules/@opencode-ai/plugin"; do
+    mkdir -p "$protected"
+    printf 'protected\n' >"$protected/file"
+    chmod 500 "$protected"
+  done
+  "$MOLT_HOME/bin/molt" client --hold &
+  client=$!
+  ready=0
+  for attempt in {1..50}; do
+    for file in "$MOLT_HOME/state/tmp"/client.*/parent.pid; do [[ ! -f "$file" ]] || ready=1; done
+    [[ "$ready" == 0 ]] || break
+    sleep 0.05
+  done
+  [[ "$ready" == 1 ]] || { kill "$client"; fail 'client did not start'; }
+  export TEST_CLIENT_PID="$client"
+  daemon="$MOLT_HOME/state/home/.mutagen/daemon/daemon.sock"
+  mkdir -p "${daemon%/*}"
+  (cd "$MOLT_HOME/state/home" && /usr/bin/python3 -c 'import socket; s = socket.socket(socket.AF_UNIX); s.bind(".mutagen/daemon/daemon.sock")')
+  export TEST_EVENTS="$TMP/uninstall-events" FAIL_HELPER=1
+  if "$MOLT_HOME/bin/molt-uninstall" --yes >"$TMP/helper-failure.log" 2>&1; then fail 'helper failure succeeded'; fi
+  if kill -0 "$client" 2>/dev/null; then kill "$client"; fail 'uninstall left a client running'; fi
+  wait "$client" 2>/dev/null || true
+  unset TEST_CLIENT_PID
+  contains 'using Docker to remove protected files' "$TMP/helper-failure.log"
+  contains 'Permission denied' "$TMP/helper-failure.log"
+  contains 'Docker cleanup helper failed' "$TMP/helper-failure.log"
+  contains 'cleanup failed; installation and retry records preserved' "$TMP/helper-failure.log"
+  [[ -f "$state/path" && -f "$MOLT_HOME/.install-manifest" && -f "$TEST_REMOTE_HOME/molt/.install-manifest" ]] || fail 'helper failure lost retry records'
+  [[ -S "$daemon" ]] || fail 'uninstall stopped Mutagen before resource cleanup'
+  printf 'DOCKER_INSTALLED=1\nDOCKER_GROUP_ADDED=1\n' >"$TEST_REMOTE_HOME/molt/state/bootstrap.manifest"
+  cp "$TEST_REMOTE_HOME/molt/state/bootstrap.manifest" "$TMP/bootstrap.expected"
+  cp "$TEST_REMOTE_HOME/molt/state/docker-resources" "$TMP/resources.expected"
+  cp "$TEST_REMOTE_HOME/molt/.install-manifest" "$TMP/owner.expected"
+  export FAIL_HELPER=0 FAIL_HELPER_PATH="$TEST_REMOTE_HOME/molt/config"
+  if "$MOLT_HOME/bin/molt-uninstall" --yes >"$TMP/shared-failure.log" 2>&1; then fail 'shared helper failure succeeded'; fi
+  cmp -s "$TMP/owner.expected" "$TEST_REMOTE_HOME/molt/.install-manifest" || fail 'shared cleanup lost the remote ownership marker'
+  cmp -s "$TMP/bootstrap.expected" "$TEST_REMOTE_HOME/molt/state/bootstrap.manifest" || fail 'shared cleanup lost VM preparation records'
+  cmp -s "$TMP/resources.expected" "$TEST_REMOTE_HOME/molt/state/docker-resources" || fail 'shared cleanup lost Docker resource records'
+  contains 'Docker cleanup helper failed' "$TMP/shared-failure.log"
+  contains 'remote root cleanup failed; retry records preserved' "$TMP/shared-failure.log"
+  [[ -f "$MOLT_HOME/state/remotes/$(printf test-vm | shasum -a 256 | cut -c1-20)/root" ]] || fail 'shared cleanup lost the saved remote root'
+  [[ -S "$daemon" ]] || fail 'shared cleanup stopped Mutagen before recovery'
+  # Older failed removals may already have deleted empty project directories.
+  for directory in projects meta cache; do
+    [[ ! -d "$TEST_REMOTE_HOME/molt/$directory" ]] || rmdir "$TEST_REMOTE_HOME/molt/$directory"
+  done
+  unset FAIL_HELPER_PATH
+  export FAIL_ROOT_RMDIR=1
+  if "$MOLT_HOME/bin/molt-uninstall" --yes >"$TMP/root-removal-failure.log" 2>&1; then fail 'root removal failure succeeded'; fi
+  cmp -s "$TMP/owner.expected" "$TEST_REMOTE_HOME/molt/.install-manifest" || fail 'final directory removal lost ownership'
+  cmp -s "$TMP/bootstrap.expected" "$TEST_REMOTE_HOME/molt/state/bootstrap.manifest" || fail 'final directory removal lost preparation records'
+  cmp -s "$TMP/resources.expected" "$TEST_REMOTE_HOME/molt/state/docker-resources" || fail 'final directory removal lost Docker records'
+  contains 'using Docker to remove protected files' "$TMP/root-removal-failure.log"
+  export FAIL_ROOT_RMDIR=0
+  : >"$TEST_EVENTS"
+  "$MOLT_HOME/bin/molt-uninstall" --yes >"$TMP/helper-success.log" 2>&1
+  if grep -Fq 'Permission denied' "$TMP/helper-success.log"; then fail 'successful recovery printed deletion errors'; fi
+  contains "$TEST_REMOTE_HOME/molt/meta/$id" "$TEST_DOCKER/helpers"
+  contains "$TEST_REMOTE_HOME/molt/cache/$id" "$TEST_DOCKER/helpers"
+  contains "$TEST_REMOTE_HOME/molt/config" "$TEST_DOCKER/helpers"
+  if grep -Fq -- '-O exit' "$TEST_EVENTS"; then fail 'uninstall closed SSH between cleanup steps'; fi
+  awk '/^mutagen daemon stop$/ {stopped++; next} stopped {exit 1} END {if (stopped != 1) exit 1}' "$TEST_EVENTS" || fail 'daemon shutdown did not follow resource cleanup'
   absent "$MOLT_HOME"
   absent "$TEST_REMOTE_HOME/molt"
   absent "$TEST_DOCKER/container"
@@ -484,7 +573,10 @@ SUDO
 [[ "${FAIL_APT:-0}" == 0 ]] || exit 1
 printf '%s\n' "$*" >>"$TEST_REMOTE_HOME/packages.log"
 if [[ "$1" == install ]]; then cp "$TEST_VM_BIN/docker.template" "$TEST_VM_BIN/docker";
-elif [[ "$1" == remove ]]; then rm -f "$TEST_VM_BIN/docker"; fi
+elif [[ "$1" == remove ]]; then
+  [[ ! -e "$TEST_REMOTE_HOME/molt/config/opencode/node_modules" && -f "$TEST_REMOTE_HOME/molt/.install-manifest" && -f "$TEST_REMOTE_HOME/molt/state/bootstrap.manifest" ]] || { printf 'shared cleanup must precede Docker removal and retain preparation records\n' >&2; exit 1; }
+  rm -f "$TEST_VM_BIN/docker"
+fi
 APT
   cat >"$TEST_VM_BIN/docker.template" <<'DOCKER'
 #!/usr/bin/env bash
@@ -492,6 +584,15 @@ case "$1 ${2:-}" in
   'info '*) [[ -f "$TEST_REMOTE_HOME/group" ]] ;;
   'container ls'*) [[ "${FOREIGN_CONTAINER:-0}" == 0 ]] || printf 'external-container\n' ;;
   'volume ls'*) ;;
+  'run '*)
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == --mount && "$2" == type=bind,src=*,dst=/cleanup ]]; then
+        path="${2#type=bind,src=}"; path="${path%,dst=/cleanup}"
+        chmod -R u+rwX "$path"
+        rm -rf -- "$path/"* "$path/".[!.]* "$path/"..?*
+      fi
+      shift
+    done ;;
   *) exit 2 ;;
 esac
 DOCKER
@@ -530,6 +631,9 @@ GROUP
   if "$MOLT_HOME/bin/molt" unprepare-vm; then fail 'removed Docker while external containers remained'; fi
   [[ -x "$TEST_VM_BIN/docker" && -f "$TEST_REMOTE_HOME/group" ]] || fail 'failed VM cleanup removed dependencies'
   export FOREIGN_CONTAINER=0
+  mkdir -p "$TEST_REMOTE_HOME/molt/config/opencode/node_modules/plugin"
+  printf 'protected\n' >"$TEST_REMOTE_HOME/molt/config/opencode/node_modules/plugin/file"
+  chmod 500 "$TEST_REMOTE_HOME/molt/config/opencode/node_modules/plugin"
   "$MOLT_HOME/bin/molt-uninstall" --yes --undo-vm
   absent "$TEST_REMOTE_HOME/molt"
   absent "$TEST_REMOTE_HOME/group"

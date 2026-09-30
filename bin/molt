@@ -290,6 +290,7 @@ ssh_up() {
 }
 
 ssh_down() {
+  [[ "${MOLT_UNINSTALLING:-0}" != 1 ]] || return 0
   if ssh_ok; then ssh -O exit "$MOLT_HOST"; fi
 }
 
@@ -980,12 +981,15 @@ cmd_reset_all() {
 }
 
 cmd_remove_remote_roots() {
-  local state root failed=0
+  local state root failed=0 action=remove-root
+  [[ $# -le 1 ]] || die 'molt remove-remote-roots [--keep-root]'
+  case "${1:-}" in --keep-root) action=clean-root ;; '') ;; *) die 'molt remove-remote-roots [--keep-root]' ;; esac
   for state in "$MOLT_HOME/state/remotes"/*/host; do
     [[ -f "$state" ]] || continue
     MOLT_HOST="$(read_value "$state")"
     root="$(read_value "$(dirname "$state")/root")"
-    if remote_script remove-root "$root" "$MOLT_INSTALL_ID"; then
+    if remote_script "$action" "$root" "$MOLT_INSTALL_ID"; then
+      [[ "$action" == remove-root ]] || continue
       ssh_down || failed=1
       rm -rf -- "$(dirname "$state")" || failed=1
     else failed=1; fi

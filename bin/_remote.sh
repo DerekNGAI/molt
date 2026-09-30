@@ -35,6 +35,24 @@ claim() {
 as_root() { if [[ "$(id -u)" == 0 ]]; then "$@"; else sudo -- "$@"; fi; }
 bootstrap_value() { awk -F= -v key="$1" '$1 == key {value=$2} END {print value}' "$root/state/bootstrap.manifest" 2>/dev/null || true; }
 
+remove_path() {
+  local path="$1" removal_error
+  if removal_error="$(rm -rf -- "$path" 2>&1)"; then return 0; fi
+  if [[ ! -d "$path" || -L "$path" || "$(realpath -m -- "$path")" != "$path" ]]; then
+    printf '%s\n' "$removal_error" >&2
+    return 1
+  fi
+  # Containers can leave directories owned by root. Mount only the validated path.
+  printf 'molt: using Docker to remove protected files in %s\n' "$path" >&2
+  if ! { docker run --rm --quiet --network none --label "io.molt.installation=$owner" \
+      --mount "type=bind,src=$path,dst=/cleanup" busybox:1.37.0 \
+      sh -c 'rm -rf /cleanup/* /cleanup/.[!.]* /cleanup/..?*' && rmdir -- "$path"; }; then
+    printf '%s\n' "$removal_error" >&2
+    printf 'molt: could not remove %s; retry records retained\n' "$path" >&2
+    return 1
+  fi
+}
+
 case "$action" in
   validate-root)
     if [[ -e "$root/.install-manifest" ]]; then owned;
@@ -153,13 +171,7 @@ case "$action" in
         if [[ "$layout" == 2 ]]; then
           case "$path" in "$root/projects/$id"|"$root/meta/$id"|"$root/cache/$id") ;; *) fail 'project path is outside its owned root' ;; esac
         fi
-        if ! rm -rf -- "$path"; then
-          # Containers can leave directories owned by root; Docker access already
-          # permits this narrowly scoped helper. Its base image remains Docker cache.
-          docker run --rm --network none --label "io.molt.installation=$owner" \
-            --mount "type=bind,src=$path,dst=/cleanup" busybox:1.37.0 \
-            sh -c 'rm -rf /cleanup/* /cleanup/.[!.]* /cleanup/..?*' && rmdir -- "$path" || failed=1
-        fi
+        remove_path "$path" || failed=1
       done
     fi
     images="$(docker image ls --filter "reference=$image" --format '{{.Repository}}:{{.Tag}}')" || exit 1
@@ -172,7 +184,7 @@ case "$action" in
     fi
     exit "$failed"
     ;;
-  remove-root)
+  clean-root|remove-root)
     [[ -e "$root" ]] || exit 0
     owned
     if [[ "$(bootstrap_value DOCKER_REMOVED)" != 1 && !( -f "$root/state/docker-resources" && "$(<"$root/state/docker-resources")" == 0 ) ]]; then
@@ -182,9 +194,39 @@ case "$action" in
       [[ -z "$containers" ]] || fail "owned containers still exist: $containers"
     fi
     for directory in projects meta cache; do
-      [[ -z "$(ls -A "$root/$directory")" ]] || fail "untracked files remain in $root/$directory"
+      path="$root/$directory"
+      [[ -e "$path" || -L "$path" ]] || continue
+      [[ -d "$path" && ! -L "$path" && "$(realpath -m -- "$path")" == "$path" ]] || fail "redirected remote directory: $directory"
+      entries="$(ls -A -- "$path")" || fail "could not inspect $path"
+      [[ -z "$entries" ]] || fail "untracked files remain in $path"
     done
-    rm -rf -- "$root"
+    # Remove generated files first; ownership and VM preparation records survive failure.
+    for path in "$root/"* "$root/".[!.]* "$root/"..?*; do
+      [[ -e "$path" || -L "$path" ]] || continue
+      case "$path" in "$root/.install-manifest"|"$root/state") continue ;; esac
+      remove_path "$path" || exit 1
+    done
+    for path in "$root/state/"* "$root/state/".[!.]* "$root/state/"..?*; do
+      [[ -e "$path" || -L "$path" ]] || continue
+      case "$path" in "$root/state/bootstrap.manifest"|"$root/state/docker-resources") continue ;; esac
+      remove_path "$path" || exit 1
+    done
+    [[ "$action" == remove-root ]] || exit 0
+    bootstrap_record=''; docker_record=''; has_bootstrap=0; has_resources=0
+    if [[ -f "$root/state/bootstrap.manifest" ]]; then has_bootstrap=1; bootstrap_record="$(<"$root/state/bootstrap.manifest")"; fi
+    if [[ -f "$root/state/docker-resources" ]]; then has_resources=1; docker_record="$(<"$root/state/docker-resources")"; fi
+    if ! { rm -f -- "$root/state/bootstrap.manifest" "$root/state/docker-resources" &&
+        { [[ ! -d "$root/state" ]] || rmdir -- "$root/state"; } &&
+        rm -f -- "$root/.install-manifest" && rmdir -- "$root"; }; then
+      [[ -d "$root" && ! -L "$root" && "$(realpath -m -- "$root")" == "$root" ]] || fail 'remote root changed during removal'
+      printf '%s\n' "$owner" >"$root/.install-manifest"
+      if [[ "$has_bootstrap" == 1 || "$has_resources" == 1 ]]; then
+        mkdir -p -- "$root/state"
+        [[ "$has_bootstrap" == 0 ]] || printf '%s\n' "$bootstrap_record" >"$root/state/bootstrap.manifest"
+        [[ "$has_resources" == 0 ]] || printf '%s\n' "$docker_record" >"$root/state/docker-resources"
+      fi
+      fail 'remote root removal failed; retry records retained'
+    fi
     ;;
   *) fail "unknown remote action: $action" ;;
 esac
