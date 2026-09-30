@@ -337,6 +337,33 @@ REALPATH
   local id state
   id="$("$MOLT_HOME/bin/molt" project-id "$TMP/remote-repo")"
   state="$MOLT_HOME/projects/$id"
+  local run target machine expected actual rc
+  run="$(awk '/^RUN / {sub(/^RUN /, ""); print}' "$TEST_REMOTE_HOME/molt/meta/$id/Dockerfile")"
+  # Execute the generated install step, stopping at curl before any file changes.
+  while read -r target machine expected; do
+    rc=0
+    actual="$(/bin/sh -c '
+      case "$1" in unset) unset TARGETARCH ;; empty) TARGETARCH= ;; *) TARGETARCH="$1" ;; esac
+      machine="$2"
+      uname() { printf "%s\n" "$machine"; }
+      curl() { printf "%s\n" "$2"; return 99; }
+      eval "$3"
+    ' sh "$target" "$machine" "$run" 2>"$TMP/architecture.err")" || rc=$?
+    if [[ "$expected" == unsupported ]]; then
+      [[ "$rc" == 1 && -z "$actual" ]] || fail "accepted unsupported architecture: TARGETARCH=$target uname=$machine"
+      contains 'unsupported container architecture: riscv64' "$TMP/architecture.err"
+    else
+      [[ "$rc" == 99 && "$actual" == "https://github.com/anomalyco/opencode/releases/download/v1.18.33/$expected" ]] || fail "wrong OpenCode asset: TARGETARCH=$target uname=$machine exit=$rc URL=$actual"
+    fi
+  done <<'CASES'
+unset aarch64 opencode-linux-arm64.tar.gz
+unset x86_64 opencode-linux-x64-baseline.tar.gz
+empty aarch64 opencode-linux-arm64.tar.gz
+arm64 riscv64 opencode-linux-arm64.tar.gz
+amd64 riscv64 opencode-linux-x64-baseline.tar.gz
+unset riscv64 unsupported
+riscv64 x86_64 unsupported
+CASES
   "$MOLT_HOME/bin/molt" remote-oc "@$id" auth list
   [[ "$("$MOLT_HOME/bin/molt" server-config "@$id" get)" == '{}' ]] || fail 'server configuration could not be read'
   printf '{"model":"provider/test-model"}\n' >"$TMP/server.json"

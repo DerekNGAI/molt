@@ -457,7 +457,7 @@ dockerfile_for_project() {
     printf '%s\n' 'ENV PATH="/root/.opencode/bin:/root/.nix-profile/bin:/root/.local/bin:${PATH}"'
     printf '%s\n' 'ARG TARGETARCH'
     printf '%s\n' 'COPY tools.lock /tmp/tools.lock'
-    printf '%s\n' 'RUN case "$TARGETARCH" in arm64) asset=opencode-linux-arm64.tar.gz ;; amd64) asset=opencode-linux-x64-baseline.tar.gz ;; *) exit 1 ;; esac; curl -fL "https://github.com/anomalyco/opencode/releases/download/v1.18.33/$asset" -o /tmp/opencode.tar.gz && awk -v asset="$asset" '\''$2==asset {print $1 "  /tmp/opencode.tar.gz"}'\'' /tmp/tools.lock | sha256sum -c - && mkdir -p /root/.opencode/bin && tar -xzf /tmp/opencode.tar.gz -C /root/.opencode/bin && rm /tmp/opencode.tar.gz /tmp/tools.lock'
+    printf '%s\n' 'RUN arch="${TARGETARCH:-$(uname -m)}"; case "$arch" in arm64|aarch64) asset=opencode-linux-arm64.tar.gz ;; amd64|x86_64) asset=opencode-linux-x64-baseline.tar.gz ;; *) printf "molt: unsupported container architecture: %s\n" "$arch" >&2; exit 1 ;; esac; curl -fL "https://github.com/anomalyco/opencode/releases/download/v1.18.33/$asset" -o /tmp/opencode.tar.gz && awk -v asset="$asset" '\''$2==asset {print $1 "  /tmp/opencode.tar.gz"}'\'' /tmp/tools.lock | sha256sum -c - && mkdir -p /root/.opencode/bin && tar -xzf /tmp/opencode.tar.gz -C /root/.opencode/bin && rm /tmp/opencode.tar.gz /tmp/tools.lock'
     printf '%s\n' 'WORKDIR /workspace'
     printf '%s\n' 'ENTRYPOINT []'
     printf '%s\n' 'CMD ["sleep", "infinity"]'
