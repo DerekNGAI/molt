@@ -21,7 +21,7 @@ cleanup() {
     "$DOCKER" image rm "$name" >/dev/null 2>&1 || true
   fi
   if [[ -x "${MOLT_HOME:-}/bin/molt" ]]; then "$MOLT_HOME/bin/molt" local-down || true; fi
-  if [[ "$rc" == 0 ]]; then rm -rf "$TMP"; else printf 'Integration artifacts retained: %s\n' "$TMP" >&2; fi
+  if [[ "$rc" == 0 ]]; then rm -rf "$TMP"; else printf 'Integration failed (exit %s). Artifacts retained: %s\n' "$rc" "$TMP" >&2; fi
   exit "$rc"
 }
 trap cleanup EXIT
@@ -30,6 +30,7 @@ mkdir -p "$HOME" "$TMP/repo"
 if [[ -n "${MOLT_INTEGRATION_TOOLS:-}" ]]; then
   export MOLT_MUTAGEN_BINARY="$MOLT_INTEGRATION_TOOLS/mutagen/mutagen"
   export MOLT_OPENCODE_BINARY="$MOLT_INTEGRATION_TOOLS/opencode/opencode"
+  [[ ! -x "$MOLT_INTEGRATION_TOOLS/gum/gum" ]] || export MOLT_GUM_BINARY="$MOLT_INTEGRATION_TOOLS/gum/gum"
 fi
 /bin/bash "$ROOT/install.sh" --non-interactive
 ssh-keygen -q -t ed25519 -N '' -f "$MOLT_HOME/state/ssh/id_ed25519"
@@ -60,7 +61,7 @@ printf '{"name":"containment-test"}\n' >"$TMP/repo/package.json"
 [[ ! -e "$TMP/repo/devenv.nix" ]] || fail 'start modified the Mac checkout'
 id="$("$MOLT_HOME/bin/molt" project-id "$TMP/repo")"
 [[ "$("$DOCKER" exec "$name" cat "/home/molt-test/molt/projects/$id/package.json")" == "$(cat "$TMP/repo/package.json")" ]] || fail 'project did not synchronize'
-(cd "$TMP/repo" && "$MOLT_HOME/bin/molt" run node --version)
+"$MOLT_HOME/bin/molt" remote-oc "@$id" auth list
 "$MOLT_HOME/bin/molt" client auth list
 server_port="$(cat "$MOLT_HOME/projects/$id/opencode_port")"
 password="$(cat "$MOLT_HOME/opencode.password")"
@@ -70,12 +71,29 @@ for attempt in {1..60}; do
   sleep 1
 done
 [[ "$healthy" == 1 ]] || fail 'OpenCode server did not become healthy'
+container="$(cat "$MOLT_HOME/projects/$id/container")"
+[[ "$("$DOCKER" exec "$name" docker inspect -f '{{.HostConfig.NetworkMode}}' "$container")" == bridge ]] || fail 'container is not network-isolated'
+# A server edit must reach the Mac; a one-way replica would erase it.
+"$DOCKER" exec "$name" docker exec "$container" sh -c 'printf "edited on server\n" > /workspace/server-edit.txt'
+source "$ROOT/bin/_molt.sh"
+molt_mutagen sync flush "$container"
+[[ "$(cat "$TMP/repo/server-edit.txt")" == 'edited on server' ]] || fail 'remote edits did not synchronize back'
+"$DOCKER" exec "$name" docker exec "$container" git -C /workspace status --short
+# A previous owned image must also be removed, even after losing its project tag.
+"$DOCKER" exec "$name" docker commit "$container" "molt-prior-$id:cleanup-test" >/dev/null
 "$MOLT_HOME/bin/molt" stop "$TMP/repo"
-"$MOLT_HOME/bin/molt" start "$TMP/repo"
+# Exercise the real client through the wrapper without requiring interactive input.
+# A missing session proves the authenticated attach reached the server after auto-start.
+if (cd "$TMP/repo" && "$MOLT_HOME/shims/opencode" --session ses_00000000000000000000000000 >"$TMP/attach.log" 2>&1); then
+  fail 'a missing session was unexpectedly accepted'
+fi
+grep -Eiq 'not.?found|session.*exist' "$TMP/attach.log" || { cat "$TMP/attach.log"; fail 'automatic attachment did not reach the server'; }
+[[ "$(cat "$MOLT_HOME/projects/$id/active")" == 1 ]] || fail 'attachment did not auto-start the stopped project'
 "$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/.mutagen && test ! -e /home/molt-test/.molt && test ! -e /home/molt-test/.config/opencode'
 [[ ! -e "$HOME/.mutagen" && ! -e "$HOME/.opencode" && ! -e "$HOME/.config" ]] || fail 'global tool state was created on the Mac'
 "$DOCKER" exec "$name" sh -c "mkdir -p /home/molt-test/molt/meta/$id/env/.devenv/protected && touch /home/molt-test/molt/meta/$id/env/.devenv/protected/file && chmod 700 /home/molt-test/molt/meta/$id/env/.devenv/protected"
 "$DOCKER" exec "$name" sh -c 'mkdir -p /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin && touch /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin/plugin.d.ts && chmod 700 /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin'
+"$MOLT_HOME/bin/molt" stop "$TMP/repo"
 "$MOLT_HOME/bin/molt-uninstall" --yes >"$TMP/uninstall.log" 2>&1 || { cat "$TMP/uninstall.log"; fail 'uninstall failed'; }
 grep -Fq 'using Docker to remove protected files' "$TMP/uninstall.log" || fail 'uninstall did not recover root-owned files'
 grep -Fq '/home/molt-test/molt/config' "$TMP/uninstall.log" || fail 'uninstall did not recover root-owned plugin dependencies'
@@ -83,5 +101,5 @@ if grep -Fq 'Permission denied' "$TMP/uninstall.log"; then fail 'successful reco
 if grep -Fq 'Started Mutagen daemon' "$TMP/uninstall.log"; then fail 'uninstall restarted Mutagen'; fi
 if grep -Fq 'disabling multiplexing' "$TMP/uninstall.log"; then fail 'uninstall raced SSH shutdown'; fi
 [[ ! -e "$MOLT_HOME" ]] || fail 'local installation remains'
-"$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/molt && test -z "$(docker ps -aq --filter label=io.molt.installation)"'
+"$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/molt && test -z "$(docker ps -aq --filter label=io.molt.installation)" && test -z "$(docker images -aq --filter label=io.molt.installation)"'
 printf 'molt integration tests: ok\n'

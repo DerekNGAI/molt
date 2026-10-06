@@ -24,6 +24,23 @@ see "Install MOLT"
 yes
 see "Completed: Install MOLT"
 enter
+see "Reopen MOLT"
+yes
+see "Completed: Enable shell activation"
+enter
+# Installation alone must be enough to reopen MOLT, before any VM setup.
+set installed_command [exec /bin/zsh -ic {command -v molt}]
+if {$installed_command != "$env(MOLT_HOME)/bin/molt"} { puts stderr "FAIL: a fresh Zsh cannot find MOLT after installation"; exit 1 }
+menu "Welcome to MOLT"
+down 1
+enter
+menu "MOLT Control Center"
+escape
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} { puts stderr "FAIL: closing the installer returned $result"; exit 1 }
+spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/zsh -ic molt
+stty rows 30 columns 100 < $spawn_out(slave,name)
 menu "Welcome to MOLT"
 enter
 see "Guided setup"
@@ -79,10 +96,6 @@ enter
 see "Prepare VM"
 yes
 see "Completed: Prepare VM"
-enter
-see "Shell activation"
-yes
-menu "Completed"
 enter
 menu "Setup complete"
 down 1

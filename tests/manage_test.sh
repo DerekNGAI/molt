@@ -32,8 +32,10 @@ test_config() (
   if "$MOLT" config set PATH /tmp; then fail 'accepted an unmanaged setting'; fi
   if "$MOLT" config set MOLT_OPENCODE_BASE_PORT 65535; then fail 'accepted an overflowing port range'; fi
   if "$MOLT" config set MOLT_REMOTE_HOME /; then fail 'accepted an unsafe remote root'; fi
-  if "$MOLT" config set MOLT_PORT_POLL 0.00; then fail 'accepted a zero polling interval'; fi
+   if "$MOLT" config set MOLT_ANIMATIONS 2; then fail 'accepted an invalid animation preference'; fi
   cmp -s "$TMP/config.before" "$MOLT_HOME/config" || fail 'invalid setting changed configuration'
+  "$MOLT" config set MOLT_ANIMATIONS 0
+  [[ "$("$MOLT" config get MOLT_ANIMATIONS)" == 0 ]] || fail 'animation preference was not saved'
 )
 
 test_empty_connection() (
@@ -191,13 +193,9 @@ test_project_management() (
   local id
   id="$("$MOLT" project-id "$TMP/project")"
   printf 'name: keep\nports:\n  - 3000\nother: keep\n' >"$TMP/project/.molt.yml"
-  "$MOLT" ports "@$id" '4173 8080'
-  grep -qx 'name: keep' "$TMP/project/.molt.yml" || fail 'ports editor removed other manifest settings'
-  grep -qx 'other: keep' "$TMP/project/.molt.yml" || fail 'ports editor removed following settings'
-  grep -qx '  - 8080' "$TMP/project/.molt.yml" || fail 'ports editor did not save the new ports'
   cp "$TMP/project/.molt.yml" "$TMP/ports.before"
-  if "$MOLT" ports "@$id" '3000 bad'; then fail 'accepted invalid ports'; fi
-  cmp -s "$TMP/ports.before" "$TMP/project/.molt.yml" || fail 'invalid ports modified the checkout'
+  if "$MOLT" ports "@$id" '4173 8080'; then fail 'kept application port management'; fi
+  cmp -s "$TMP/ports.before" "$TMP/project/.molt.yml" || fail 'modified the checkout manifest'
   rm -rf "$TMP/project"
   "$MOLT" status | grep -Fq "$TMP/project" || fail 'status failed for a missing checkout'
   "$MOLT" stop "@$id"

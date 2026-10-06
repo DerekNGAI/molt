@@ -1,0 +1,4 @@
+PasswordAuthentication no
+PermitRootLogin no
+AllowTcpForwarding local
+Subsystem sftp internal-sftp

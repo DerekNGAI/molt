@@ -1,445 +1,201 @@
 # molt
 
-Remote project environments for macOS.
+One remote OpenCode workspace per Git repository, managed from your Mac.
 
-molt keeps your checkout and everyday tools on your Mac while running project
-dependencies and processes inside isolated Docker containers on a remote
-Ubuntu or Debian VM.
+MOLT synchronizes your repository with an Ubuntu or Debian VM, runs an OpenCode
+server in a dedicated Ubuntu 22.04 Docker container, and connects your local
+OpenCode terminal interface to it. Running `opencode` inside a registered
+repository automatically starts its workspace, waits for the server, and attaches.
 
 ```text
-Mac checkout ── Mutagen ──▶ VM mirror ── bind mount ──▶ Docker container
-Mac shell    ── SSH and port forwarding ─────────────▶ VM
+Mac repository ◀── Mutagen (two-way-safe) ──▶ VM workspace ──▶ repo container
+Mac OpenCode   ─── authenticated SSH tunnel ────────────────▶ OpenCode server
 ```
 
-## What it does
+## Start
 
-- Detects Node, Rust, Go, and Python projects.
-- Generates a small remote `devenv.nix` when a project does not have one.
-- Creates one Mutagen mirror and Docker container per project.
-- Runs supported development commands in the remote container through local
-  shims.
-- Starts an OpenCode server for each active project and forwards project ports
-  to `localhost`.
-- Provides a full screen control center on your Mac for installation, SSH setup,
-  VM preparation, projects, settings, diagnostics, upgrades, and uninstall.
-
-## Requirements
-
-### Mac
-
-- macOS with Bash and Zsh
-- Git
-- A VM address and an initial working SSH login (key, SSH agent, or password)
-- `curl`, `tar`, `unzip`, and `shasum` for private dependency downloads
-- Perl (included with macOS) for reading SSH aliases and included configurations
-- [Mutagen](https://mutagen.io/) 0.18.1 and [OpenCode](https://opencode.ai/)
-  can be supplied externally; otherwise the installer downloads private copies
-- [Gum](https://github.com/charmbracelet/gum) 2.0.2 powers the terminal interface;
-  the installer supplies a private copy automatically
-
-### Remote VM
-
-- Ubuntu or Debian
-- Bash, GNU `realpath`, and an SSH server
-- Docker usable by the SSH user without `sudo`; the guided setup can install the
-  distribution's `docker.io` package and grant user access using `sudo`
-- Enough disk for Docker images, Nix packages, and project caches
-
-## Quick start
-
-Double-click **`MOLT.command`** in this checkout, or launch the installer:
+Double-click **MOLT.command**, or run:
 
 ```bash
 ./install.sh
 ```
 
-An interactive terminal opens the installation wizard. Choose an installation
-folder. A fresh installation starts with no connection configured. Follow
-**Guided setup** to:
+The installer lets you choose an installation folder and offers automatic
+activation in new Zsh terminals immediately, before VM setup. Accept that option
+to reopen MOLT by running `molt` in a new terminal. In an existing terminal,
+run `source ~/.molt/activate.zsh` (using your chosen installation folder).
 
-1. Enter the VM address, username, port, and identity file, or select an existing
-   SSH alias. The console writes a private SSH configuration for you.
-2. Optionally generate a dedicated key and authorize it using an initial working
-   login. SSH handles fingerprint confirmation, passwords, and passphrases.
-3. Choose your Mac project folder and remote workspace.
-4. Prepare the VM. Missing Docker and user access can be configured from the
-   console; administrator authentication is requested when needed.
-5. Optionally enable automatic activation in new Zsh terminals.
-6. Select a Git repository and choose **Start**.
+You can also reopen it directly with `~/.molt/bin/molt`, or double-click
+`MOLT.command` in the installation folder, when shell activation is disabled.
 
-The console performs the lifecycle commands and displays progress, results, and
-scrollable logs. Use arrow keys and Enter to select actions, Escape to go back,
-and Ctrl-C to cancel an action. SSH, provider authentication, and interactive
-shells temporarily use the terminal, then return to the console.
+The setup wizard then configures SSH and prepares Docker on the VM.
+Existing SSH aliases can be selected directly; MOLT can also create and authorize
+a dedicated SSH key using an initial working login.
 
-After installation, open the console with `molt`, or double-click
-`MOLT.command` in the installation folder. **Maintenance → Open installation
-folder in Finder** helps locate the launcher.
-
-If automatic shell activation was not selected, activate the current session:
+Then choose **Projects → Scan / add repositories** and register your repository.
+In a terminal inside that repository:
 
 ```bash
-source ~/.molt/activate.zsh
-molt
+source ~/.molt/activate.zsh  # use your chosen installation folder
+opencode
 ```
 
-For scripted installation, use `--non-interactive`. It installs the private
-files and tools without opening the wizard:
+The first launch builds the container. Later launches reuse it and reconnect.
+Stopped workspaces start automatically. Subdirectories and nested registered
+repositories select the closest registered workspace.
+
+Only the `opencode` command is intercepted. Commands such as `npm`, `python`,
+`cargo`, and `git` use your ordinary local tools. Outside registered repositories,
+`opencode` uses MOLT's isolated local client. Use `MOLT_LOCAL=1 opencode` to choose
+that client explicitly. OpenCode's explicit `attach`, `serve`, `web`, help, and
+version commands retain their normal client behavior.
+
+OpenCode provider commands also work inside a registered repository:
 
 ```bash
-./install.sh --non-interactive
+opencode auth login
+opencode models
+opencode run 'Explain this project'
 ```
 
-## Local control center
+These run inside its container. Provider credentials and session history are kept
+in that project's owned VM cache. Server configuration is shared by workspaces
+on the same VM and can be edited through **OpenCode → Edit server settings**.
+
+## Requirements
+
+- macOS with Bash, Zsh, Git, SSH, `curl`, `tar`, `unzip`, `shasum`, and Perl.
+- An Ubuntu or Debian VM with a working SSH login, Bash, and GNU `realpath`.
+  Its SSH server must permit local TCP forwarding for the OpenCode connection.
+- Docker usable by the SSH user. The wizard can install `docker.io` and configure
+  access through `sudo`.
+- Internet access for the initial tool downloads and Docker build.
+
+The installer downloads private, checksum-verified copies of Mutagen 0.18.1,
+OpenCode 1.18.33, and Gum 2.0.2 when suitable external tools are unavailable.
+OpenCode's server version is pinned in the image. The container includes Git,
+curl, and CA certificates; it provides a plain Ubuntu environment. Language
+toolchains and dependency installation are no longer generated by MOLT.
+
+## Terminal control center
+
+Run `molt` to open the console. Use arrow keys and Enter to select actions, Escape
+to go back, and Ctrl-C to cancel an action. Logs and action results remain available
+for inspection and retry. Interactive SSH and OpenCode sessions return to the
+console when finished.
 
 | Screen | Actions |
 | --- | --- |
-| Overview | SSH, project, container, and forwarding status |
-| Projects | Scan/register, start/stop/restart, logs, ports, shells, environment files, reset |
-| Connections | Create/select profiles, use existing aliases, generate/authorize/revoke dedicated keys |
-| Guided setup | Choose folders, verify SSH, prepare Docker, enable shell activation |
-| OpenCode | Select a project, attach, provider login/logout, available models, server JSON settings |
-| Settings | Project folder, remote workspace, OpenCode port range, denied ports, polling, activation |
-| Maintenance | Tool versions, diagnostics, VM preparation, shutdown, cleanup, repair, upgrade from a checkout |
-| Uninstall | Preview cleanup, complete removal, optional Docker preparation undo, local-only removal |
+| Overview | Connection and workspace status |
+| Projects | Register, open OpenCode, start, stop, restart, logs, synchronization, remove |
+| Connections | SSH profiles, existing aliases, dedicated keys |
+| Guided setup | Configure SSH, prepare Docker, enable shell activation |
+| OpenCode | Attach, provider authentication, models, server configuration |
+| Settings | Folders, OpenCode port range, animations, shell activation |
+| Maintenance | Diagnostics, VM preparation, repair, upgrade, cleanup |
+| Uninstall | Complete removal, optional Docker preparation reversal, local-only removal |
 
-OpenCode authentication runs in the selected project's remote environment, so
-credentials are stored in its contained cache. OAuth callback ports use the
-same automatic forwarding as other remote commands. Server settings are edited
-as a JSON object and shared by projects on that VM; restart projects to apply
-changes. Shell activation takes effect in new terminals. Changes to the
-OpenCode base port apply to newly registered projects.
-
-Saved connections referenced by projects, workspaces, or an authorized dedicated
-key are retained for cleanup. To change those connection details, clean up their
-resources or create a new alias. The Mac checkout remains available after reset.
-
-## Configuration
-
-The console manages the usual settings without editing files. Advanced users
-can edit `~/.molt/config`, created from [config.example](config.example):
+The interface uses rounded headers, project status indicators, short header
+transitions, and animated loading indicators. Disable motion in **Settings →
+Animations**, or save the preference from the CLI:
 
 ```bash
-MOLT_HOST=''
-MOLT_ROOT="$HOME/src"
-MOLT_REMOTE_HOME='$HOME/molt'
-MOLT_OPENCODE_BASE_PORT=4100
+molt config set MOLT_ANIMATIONS 0
 ```
 
-`MOLT_HOST` starts empty. Choose a connection in the console to set it to a saved
-profile name or an existing SSH alias. A connection name needs an SSH configuration
-mapping it to your VM address; the name alone does not create a connection.
+This removes transitions and animated spinners. `NO_COLOR=1` also uses the static
+interface and plain Gum styles.
 
-**Connections → Use an existing SSH alias** lists named `Host` entries from the
-SSH configuration and its included files, showing each alias's effective username,
-hostname, and port. Wildcard rules such as `Host *` are defaults, so they are not
-selectable entries. Choose **Add a connection** if your VM has no named entry.
-The same list is available with `molt connection aliases`.
+## Synchronization and connections
 
-The remote root uses `$HOME` on the VM. All child directories derive from it.
-Each project receives a stable directory and an OpenCode port derived from its
-repository path. An optional `MOLT_SSH_CONFIG` can point to an SSH configuration
-file stored inside the local installation; an existing `~/.ssh/config` is also
-usable as an external prerequisite.
+Synchronization is bidirectional: edits made by OpenCode return to your Mac,
+including newly created files and Git changes. Dependency directories such as
+`node_modules`, `.venv`, `target`, and build output are excluded. Git metadata is
+included so the server can inspect normal repository history and changes.
 
-The connection wizard uses `~/.molt/state/ssh/config`, including existing SSH
-configuration so recorded external aliases remain available. It stores generated
-keys under `state/ssh/keys`. Existing private keys are referenced directly.
-[macos/ssh_config.snippet](macos/ssh_config.snippet) is an optional manual setup
-example.
+Mutagen's `two-way-safe` mode preserves conflicting changes rather than silently
+overwriting either side. **Projects → Synchronization**, or `molt sync <repo>`,
+shows conflicts. Resolve them before restarting or removing the workspace. MOLT
+checks for conflicts and synchronization problems before deleting its mirror.
 
-Hosts and actual remote paths are recorded when resources are created. Cleanup
-uses these records even if you edit the configuration afterward. Clean up a
-recorded remote root before choosing another root on the same SSH host.
+Each container uses Docker's bridge network. Its server listens on port 4096
+inside the container, published to a project-specific **127.0.0.1** port on the VM.
+MOLT forwards that port over its private SSH connection and uses a generated
+password for OpenCode authentication. Application port discovery and forwarding
+have been removed.
 
-OpenCode uses installation-specific configuration and authentication. Configure
-the remote server in `~/molt/config/opencode`; local client data lives under
-`~/.molt/state`. Existing global OpenCode settings are not imported automatically.
+The base port defaults to 4100, with 500 ports available. Registration avoids
+assigning an existing workspace's port again. A listener belonging to another
+application causes an explicit connection error. Change the base port before
+registering a project when the default range is unavailable.
 
-## Daily use
-
-Once a project is running, work from its Mac checkout as usual:
+## CLI
 
 ```bash
-cd ~/Documents/Github/app
-pnpm dev
-pnpm test
-opencode
-git status
-nvim .
+./install.sh --non-interactive       # install without opening the wizard
+source ~/.molt/activate.zsh
+molt connection use my-vm           # select an existing SSH alias
+molt bootstrap                      # prepare Docker and the owned VM workspace
+molt register /path/to/repo
+molt start /path/to/repo
+molt oc --continue                  # attach from this repo; start if necessary
+molt stop /path/to/repo
+molt logs /path/to/repo
+molt sync /path/to/repo
+molt status
+molt doctor
 ```
 
-The shims route supported development commands to the active project
-container. Git, editors, search tools, and ordinary shell commands remain
-local. Run one command locally with:
+Use `molt help` for the command list. Set `MOLT_HOME` when installing into a custom
+folder. `molt shell enable` adds a recorded activation line to `.zshrc`;
+`molt shell disable` removes it while preserving user edits.
 
-```bash
-MOLT_LOCAL=1 pnpm test
-```
-
-Use **Overview** to see project/container state and forwarded ports. Choose
-**Stop** in a project menu or **Stop all projects** when you are finished.
-The equivalent `molt status`, `molt stop`, and `molt down` commands are available
-for scripts and direct use.
-
-## Commands
-
-| Command | Description |
-| --- | --- |
-| `molt` | Open the local control center |
-| `molt scan [root]` | List Git repositories |
-| `molt inspect [repo]` | Inspect runtime and project files |
-| `molt generate-env [repo]` | Create a minimal `devenv.nix` |
-| `molt setup` | Prepare the VM |
-| `molt bootstrap` | Install missing Docker, grant user access, and prepare the VM |
-| `molt config [show\|get\|set]` | Manage configuration |
-| `molt connection [action]` | Manage SSH profiles and dedicated access keys |
-| `molt shell [status\|enable\|disable]` | Manage optional Zsh activation |
-| `molt ports <repo> "3000 4173"` | Save ports in `.molt.yml` and apply forwarding |
-| `molt tools` | Show tool versions and locations |
-| `molt register [repo]` | Register a repository |
-| `molt start [repo]` | Sync, build, and start a project |
-| `molt stop [repo]` | Stop one project |
-| `molt up` | Start all registered projects |
-| `molt down` | Stop all active projects |
-| `molt local-down` | Stop owned local helpers, Mutagen daemon, and SSH connections |
-| `molt status` | Show SSH, project, container, and port state |
-| `molt doctor` | Check local and VM prerequisites |
-| `molt run <command> [args]` | Run a command in the active container |
-| `molt ssh [args]` | Open an SSH session to the VM |
-| `molt oc [args]` | Attach the local OpenCode client remotely |
-| `molt logs [repo]` | Show the remote OpenCode log |
-| `molt review-env [repo]` | Review generated `devenv.nix` |
-| `molt reset [repo]` | Remove one project's remote and local state |
-| `molt reset --all` | Remove all project state |
-| `molt unprepare-vm` | Undo recorded Docker preparation when its daemon is empty |
-
-Stop, reset, logs, and other management operations can use `@<project-id>` to address a saved registration. This
-lets the console stop or reset resources after a Mac checkout is moved or deleted.
-
-## Project configuration
-
-Most repositories need no molt file. To declare ports that should always be
-forwarded, add an optional `.molt.yml` to the repository:
-
-```yaml
-ports:
-  - 3000
-  - 4173
-```
-
-The file is read locally and can be committed with the project. While a
-remote command is attached, molt also detects newly opened ports and forwards
-them automatically.
-
-## One folder per machine
-
-```text
-Mac ~/.molt/
-  .install-manifest       ownership, installation ID, and tool locations
-  activate.zsh            explicit session activation
-  MOLT.command           Finder launcher for the console
-  bin/, shims/, tools/    links to the current release
-  current, releases/      verified releases and atomic upgrade switch
-  config, opencode.password
-  projects/<id>/          registry and cleanup records
-  state/                 configuration, authentication, caches, temporary files,
-                         Mutagen daemon, SSH sockets, and known hosts
-
-VM ~/molt/
-  .install-manifest       matching installation ID
-  projects/<id>/          Mutagen mirror; dependencies and build output
-  meta/<id>/              Dockerfile, password, logs; generated environment in env/
-  config/opencode/        installation-specific server/provider configuration
-  cache/<id>/             container HOME, package caches, and tool state
-  state/                 Mutagen agents, sync state, and temporary uploads
-```
-
-Docker's own storage is the exception: containers, images, base images, and build
-cache are stored by the existing Docker daemon. Project caches use bind-mounted
-directories in the remote root. Containers and project images carry
-`io.molt.installation` and `io.molt.project` labels for targeted cleanup.
-
-Opting into shell activation adds a recorded `.zshrc` entry. Authorizing a
-dedicated key adds an exact public-key entry on the VM. Guided Docker preparation
-uses VM packages and user groups. The console requests these actions explicitly
-and records them for cleanup.
-
-Mutagen synchronizes the checkout one way from the Mac to the VM. Git data and
-common dependencies/build caches stay out of synchronization. Starting a project
-does not write or commit files on the Mac. Use `molt generate-env` and
-`molt commit-env` explicitly if you want an environment file in your repository.
-
-## Installation and upgrades
-
-1. Validate the destination and its ownership marker. Home/root aliases, source
-   checkout overlap, and populated unrelated directories are rejected.
-2. Stage molt and missing portable tools inside the destination. Downloads use
-   pinned versions and SHA-256 hashes from `tools.lock`, without executing a
-   downloaded installer. External binaries can be selected with
-    `MOLT_MUTAGEN_BINARY`, `MOLT_OPENCODE_BINARY`, and `MOLT_GUM_BINARY`.
-3. Verify executable versions, then switch the `current` release link. Preserve
-   configuration, passwords, and project records. A failed upgrade leaves the
-   previous release available; a failed fresh installation removes its artifacts.
-4. Interactive installations open the local setup wizard. Optional automatic
-   activation adds a recorded entry to `.zshrc`; it preserves dotfile symlinks
-   and backs up the original content. Explicit session activation is also
-   available through `activate.zsh`.
-5. Guided VM preparation uses Ubuntu/Debian package tools when Docker or user
-   access is missing. An existing VM and initial SSH login are required.
-   `molt setup` remains available to check Docker and create the marked root.
-
-Use **Maintenance → Repair this installation** to rerun the bundled installer,
-or **Upgrade from a checkout** to select an updated MOLT source folder. Gum,
-Mutagen, and OpenCode binaries can be supplied with `MOLT_GUM_BINARY`,
-`MOLT_MUTAGEN_BINARY`, and `MOLT_OPENCODE_BINARY`.
-
-Tool environment overrides apply only to molt-managed processes. Mutagen's
-local daemon and remote agent run from private state directories, so global
-Mutagen sessions and OpenCode settings are independent of a new installation.
-
-Generated environments run from their metadata folder, then commands enter the
-project workspace. When a checkout has its own environment, it is used directly.
-Remote-generated lock/config files are protected from synchronization until a
-corresponding Mac source file exists; starting again updates that policy.
-
-## Reset and uninstall
-
-Reset a project when you want to remove its container, image, Mutagen session,
-forwarded ports, remote mirror, and local state:
-
-```bash
-molt reset
-```
-
-Reset keeps the Mac checkout and Git history. Cleanup is safe to retry: already
-absent resources count as removed; real failures return a nonzero exit status
-and keep the records needed for another attempt.
-
-Choose **Uninstall** in the local console to preview and remove the installation.
-The console also offers optional Docker preparation undo and local-only removal
-with an exported cleanup inventory.
-
-For command line removal:
+## Clean removal
 
 ```bash
 molt-uninstall --yes
 ```
 
-Without `--yes`, removal asks for confirmation. An installation that never
-created remote resources can be removed without connecting to the VM. If the
-VM is unreachable and resources are recorded, normal uninstall preserves the
-installation for retry.
+MOLT keeps installation manifests, project records, exact dedicated SSH keys, and
+Docker ownership labels. Complete removal stops owned clients and servers, flushes
+server edits to the Mac, removes synchronization sessions, project containers and
+images, VM mirrors, credentials, caches, SSH helpers, and the local installation.
+It restores its recorded shell activation change. Mac repositories are retained.
 
-Normal removal revokes dedicated public keys using their saved authorization
-records and removes managed shell activation. It keeps credentials and retry
-records if cleanup fails. Initial setup failures can be removed without Docker
-when the owned workspace has never created project Docker resources.
+Cleanup failures preserve the installation and retry records. Reconnect to the VM
+or resolve synchronization problems and retry. `molt reset <repo>` removes just
+that project's resources; `molt reset --all` removes all project resources.
 
-To also undo recorded Docker installation/user access:
+`molt-uninstall --yes --undo-vm` also reverses MOLT-recorded Docker installation
+and user access when the daemon has no containers or volumes. Existing Docker
+installations and external tools are preserved. Shared Docker base images, build
+cache, and system Docker storage remain under Docker's management; MOLT never runs
+a broad Docker prune.
 
-```bash
-molt-uninstall --yes --undo-vm
-```
+`--local-only` explicitly leaves VM resources behind and prints their cleanup
+inventory. The TUI saves that inventory to a user-chosen file outside the
+installation. Complete removal is the default.
 
-This requires an empty Docker container and volume inventory. It removes only
-the Docker package installed by MOLT and the group membership MOLT added.
-Docker storage and shared package dependencies are retained.
+## Upgrading
 
-For explicit local-only removal:
-
-```bash
-molt-uninstall --yes --local-only
-```
-
-This prints the saved hosts, paths, and Docker identifiers before removing local
-records. Save that output for later remote cleanup. It stops owned local helpers
-and leaves remote containers, files, and dedicated public-key entries in place.
-Generated private keys are removed with the local installation; retain your
-initial VM login method for later cleanup.
-
-Existing external tools, Git checkouts, external SSH settings, and shared
-Docker base/build caches are preserved. Docker itself is retained unless its
-recorded installation is explicitly undone. Close activated shells or remove their
-session PATH entries after deleting the installation.
-
-## Manual removal without the uninstaller
-
-For a normal shutdown, run `molt down` and `molt local-down`, then delete
-`~/.molt`. If molt cannot run, stop its command processes, private Mutagen daemon,
-and SSH connections in Activity Monitor before deleting the folder. Deleting a
-folder alone does not stop running processes.
-
-On the VM, the following Bash commands remove the labeled resources for the
-default remote root and then delete the folder. Substitute your configured root
-if different:
-
-```bash
-root="$HOME/molt"
-owner="$(cat "$root/.install-manifest")"
-[[ "$owner" =~ ^[a-f0-9]{32}$ ]] || { printf 'Invalid installation ID\n' >&2; exit 1; }
-docker ps -aq --filter "label=io.molt.installation=$owner" | xargs -r docker rm -f
-docker image ls -q --filter "label=io.molt.installation=$owner" | sort -u | xargs -r docker image rm
-# Containers may have created files owned by root. This helper restores ownership.
-docker run --rm --network none --mount "type=bind,src=$root,dst=/cleanup" \
-  busybox:1.37.0 chown -R "$(id -u):$(id -g)" /cleanup
-rm -rf -- "$root"
-```
-
-The installation ID is also in the Mac manifest if the remote marker is missing.
-Shared Docker base images and build cache remain under Docker's own management;
-there is no broad Docker prune in molt cleanup.
-
-## Migrating an older installation
-
-Run the new installer with the same `MOLT_HOME`. It preserves project records,
-configuration, and credentials, saves `legacy-install-manifest`, and removes
-exactly matching legacy shell entries. Symlinked `.zshrc` files stay symlinked;
-the original content is backed up inside the installation. Edited entries are
-reported for manual cleanup.
-
-Legacy project records retain their original container/image/volume names and
-paths for `molt reset --all`. Reset these projects before starting them with the
-contained layout. If you changed the SSH host before migration, correct the
-saved project `host` records before resetting.
-
-Global Homebrew/OpenCode installations, shared OpenCode configuration, shared
-Mutagen state, old SSH entries, and empty legacy remote directories are reported
-or preserved for manual review. In particular, remove empty legacy `projects`
-and `meta` directories before claiming the same remote root with `molt setup`.
-Import any provider settings into the new remote configuration explicitly.
+Run the installer with your existing `MOLT_HOME`. It preserves configuration,
+credentials, and ownership records. Existing contained projects rebuild into the
+plain Ubuntu OpenCode container on their next launch while retaining their mirror
+and session history. See [MIGRATION.md](MIGRATION.md) for details and older layouts.
 
 ## Development
-
-Run the shell checks from the repository root:
 
 ```bash
 bash tests/molt_test.sh
 bash tests/lifecycle_test.sh
 bash tests/manage_test.sh
 bash tests/tui_test.sh
-```
-
-The terminal interaction check uses macOS `expect` and Python 3 to run the real
-Gum UI in a pseudo-terminal. It checks keyboard navigation, cancellation and
-owned child cleanup, settings, SSH failure, resizing, terminal restoration, and
-the guided install-to-uninstall flow. It downloads verified Gum if
-`MOLT_GUM_BINARY` is not supplied. SSH and VM package operations in the shell and
-terminal checks use isolated test doubles.
-
-For a real lifecycle and containment check, run the opt-in integration test. It
-requires a local Docker daemon, downloads the pinned tools if needed, and creates
-a disposable SSH host with an independent Docker daemon:
-
-```bash
 bash tests/integration_test.sh
 ```
 
-The test covers setup, real synchronization, project startup, running a command,
-stop/restart, and complete removal. It checks for global tool directories on both
-machines. Failed runs retain their local diagnostic artifacts; the test's Docker
-host and image are removed on exit.
-
-For debugging, `MOLT_INTEGRATION_KEEP_VM=1` keeps the disposable host and image
-after a failure. The test prints their name; remove them with `docker rm -f` and
-`docker image rm` after investigating.
+The shell tests use isolated tool doubles. The TUI tests use real Gum in an
+`expect` pseudo-terminal and check navigation, cancellation, resize, terminal
+restoration, static motion settings, and the guided installation-to-uninstallation
+flow. The opt-in integration test requires Docker and creates a disposable SSH
+host with its own Docker daemon; it checks real builds, synchronization in both
+directions, server health, stop/restart, and complete removal.

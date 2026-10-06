@@ -13,13 +13,13 @@ managed_file() {
 cmd_config() {
   local action="${1:-show}" key="${2:-}" value="${3:-}" tmp record
   case "$key" in
-    MOLT_HOST|MOLT_ROOT|MOLT_REMOTE_HOME|MOLT_SSH_CONFIG|MOLT_OPENCODE_BASE_PORT|MOLT_PORT_DENY|MOLT_PORT_POLL) ;;
+    MOLT_HOST|MOLT_ROOT|MOLT_REMOTE_HOME|MOLT_SSH_CONFIG|MOLT_OPENCODE_BASE_PORT|MOLT_ANIMATIONS) ;;
     '') [[ "$action" == show ]] || die 'choose a configuration setting' ;;
     *) die "unsupported setting: $key" ;;
   esac
   case "$action" in
     show)
-      for key in MOLT_HOST MOLT_ROOT MOLT_REMOTE_HOME MOLT_SSH_CONFIG MOLT_OPENCODE_BASE_PORT MOLT_PORT_DENY MOLT_PORT_POLL; do
+      for key in MOLT_HOST MOLT_ROOT MOLT_REMOTE_HOME MOLT_SSH_CONFIG MOLT_OPENCODE_BASE_PORT MOLT_ANIMATIONS; do
         printf '%s=%s\n' "$key" "${!key}"
       done ;;
     get) printf '%s\n' "${!key}" ;;
@@ -38,8 +38,7 @@ cmd_config() {
         MOLT_OPENCODE_BASE_PORT)
           valid_port "$value" && (( 10#$value >= 1024 && 10#$value <= 65036 )) || die 'OpenCode base port must be between 1024 and 65036'
           value="$((10#$value))" ;;
-        MOLT_PORT_POLL) [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v value="$value" 'BEGIN {exit !(value > 0)}' || die 'poll interval must be positive' ;;
-        MOLT_PORT_DENY) for port in $value; do valid_port "$port" || die "invalid denied port: $port"; done ;;
+        MOLT_ANIMATIONS) [[ "$value" == 0 || "$value" == 1 ]] || die 'animations must be 0 or 1' ;;
       esac
       molt_state
       managed_file "$CONFIG_FILE"
@@ -307,27 +306,6 @@ cmd_shell() {
   esac
 }
 
-cmd_ports() {
-  local ref="${1:-.}" ports="${2:-}" port path tmp
-  [[ $# == 2 ]] || die 'molt ports <repo|@project-id> "<space-separated ports>"'
-  for port in $ports; do valid_port "$port" || die "invalid port: $port"; done
-  load_project "$ref" || die 'project is not registered'
-  path="$(repo_root "$PROJECT_PATH")/.molt.yml"
-  [[ ! -L "$path" ]] || die 'refusing to replace a symlinked project manifest'
-  if [[ -f "$path" ]] && grep -Eq '^[[:space:]]*ports:[[:space:]]*[^[:space:]]' "$path"; then
-    die 'the ports setting must be a block list before editing it here'
-  fi
-  tmp="$(mktemp "${path}.XXXXXX")"
-  if [[ -f "$path" ]]; then
-    awk '/^ports:[[:space:]]*$/ { skip=1; next } skip && /^[^[:space:]]/ { skip=0 } !skip { print }' "$path" >"$tmp"
-  fi
-  printf 'ports:\n' >>"$tmp"
-  for port in $ports; do printf '  - %s\n' "$((10#$port))" >>"$tmp"; done
-  mv -f "$tmp" "$path"
-  save_project
-  if [[ "$PROJECT_ACTIVE" == 1 ]]; then ssh_up; cancel_project_forwards; forward_project_ports; fi
-}
-
 cmd_bootstrap() {
   local home root record rc
   molt_owned_home || die 'install molt before preparing a VM'
@@ -402,15 +380,7 @@ cmd_remote_oc() {
   local ref="$1"
   shift
   load_project "$ref" || die 'project is not registered'
-  [[ "$PROJECT_ACTIVE" == 1 ]] || die 'start the project before managing OpenCode'
-  run_loaded_project "$PROJECT_PATH" /root/.opencode/bin/opencode "$@"
-}
-
-cmd_project_shell() {
-  load_project "$1" || die 'project is not registered'
-  [[ "$PROJECT_ACTIVE" == 1 ]] || die 'start the project before opening its shell'
-  ensure_project_container
-  ssh -t "$MOLT_HOST" "docker exec -it --workdir $(quote_remote "$(project_environment_dir)") $(quote_remote "$PROJECT_CONTAINER") devenv shell -- bash -c 'cd /workspace && exec bash'"
+  run_loaded_project "$PROJECT_PATH" /opt/opencode/opencode "$@"
 }
 
 cmd_server_config() {

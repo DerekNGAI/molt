@@ -4,6 +4,7 @@
 tui_begin() {
   [[ -t 0 && -t 1 && "${TERM:-dumb}" != dumb ]] || { molt_error 'the control center needs an interactive terminal'; return 1; }
   TUI_STTY="$(stty -g)"
+  tui_theme
   tput smcup >&2 2>/dev/null || true
 }
 
@@ -13,9 +14,31 @@ tui_end() {
   tput cnorm >&2 2>/dev/null || true
 }
 
+tui_theme() {
+  TUI_ACCENT=80
+  [[ -z "${NO_COLOR:-}" ]] || TUI_ACCENT=''
+  export GUM_CHOOSE_CURSOR_FOREGROUND="$TUI_ACCENT" GUM_CHOOSE_SELECTED_FOREGROUND="$TUI_ACCENT"
+  export GUM_CHOOSE_CURSOR_BOLD=true GUM_CHOOSE_SELECTED_BOLD=true
+  export GUM_CHOOSE_HEADER_FOREGROUND=240
+  export GUM_INPUT_CURSOR_FOREGROUND="$TUI_ACCENT" GUM_INPUT_PROMPT_FOREGROUND="$TUI_ACCENT"
+  export GUM_SPIN_SPINNER_FOREGROUND="$TUI_ACCENT" GUM_CONFIRM_SELECTED_BACKGROUND="$TUI_ACCENT"
+}
+
+tui_animations_enabled() { [[ "${MOLT_ANIMATIONS:-1}" == 1 && -z "${NO_COLOR:-}" ]]; }
+
 tui_screen() {
-  tput clear >&2 2>/dev/null || true
-  "$GUM" style --bold --foreground 6 -- "MOLT  /  $1" >&2
+  local width
+  width="$(tput cols 2>/dev/null || printf 80)"
+  width=$((width - 6)); [[ "$width" -le 76 ]] || width=76
+  [[ "$width" -ge 20 ]] || width=20
+  # Redraw the header in place; short transitions avoid full-screen flashing.
+  if tui_animations_enabled; then
+    printf '\033[H\033[J' >&2
+    "$GUM" style --foreground 240 --border rounded --border-foreground 238 --padding '0 2' --width "$width" -- "M O L T   /   $1" >&2
+    sleep 0.04
+  fi
+  printf '\033[H\033[J' >&2
+  "$GUM" style --bold --foreground "$TUI_ACCENT" --border rounded --border-foreground "$TUI_ACCENT" --padding '0 2' --width "$width" -- "M O L T   /   $1" >&2
   printf '\n' >&2
 }
 
@@ -25,8 +48,8 @@ tui_choose() {
   tui_screen "$title"
   [[ -z "$description" ]] || printf '%s\n\n' "$description" >&2
   height="$(tput lines 2>/dev/null || printf 24)"
-  height=$((height - 10)); [[ "$height" -gt 3 ]] || height=3
-  "$GUM" choose --height "$height" --cursor.foreground 6 --selected.foreground 6 --label-delimiter '|' -- "$@"
+  height=$((height - 12)); [[ "$height" -gt 3 ]] || height=3
+  "$GUM" choose --height "$height" --cursor '› ' --padding '0 2' --label-delimiter '|' -- "$@"
 }
 
 tui_input() {
@@ -34,7 +57,7 @@ tui_input() {
   "$GUM" input --header 'Enter to save / Esc to go back' --char-limit 0 --value "${2:-}"
 }
 
-tui_confirm() { "$GUM" confirm --default=false --show-help --selected.background 6 --selected.foreground 0 -- "$1"; }
+tui_confirm() { "$GUM" confirm --default=false --show-help --selected.foreground 0 -- "$1"; }
 
 tui_message() {
   tui_choose "$1" "$2" 'Back|back' >/dev/null || true
@@ -76,7 +99,12 @@ tui_run() {
     tui_screen "$title"
     trap 'cancelled=1; tui_stop_action' INT
     trap 'tui_stop_action; exit 143' TERM
-    if "$GUM" spin --show-output --show-error --title "$title (Ctrl-C to cancel)" -- "$TUI_BIN" ui-action "$TUI_ACTION_WORK" "$@"; then rc=0; else rc=$?; fi
+    if tui_animations_enabled; then
+      if "$GUM" spin --spinner dot --padding '1 2' --show-output --show-error --title "$title (Ctrl-C to cancel)" -- "$TUI_BIN" ui-action "$TUI_ACTION_WORK" "$@"; then rc=0; else rc=$?; fi
+    else
+      printf '  %s (Ctrl-C to cancel)\n\n' "$title" >&2
+      if "$TUI_BIN" ui-action "$TUI_ACTION_WORK" "$@"; then rc=0; else rc=$?; fi
+    fi
     tui_stop_action || true
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -85,7 +113,7 @@ tui_run() {
       managed_file "$MOLT_HOME/state/ui/last.log"
       cp "$TUI_ACTION_WORK/output" "$MOLT_HOME/state/ui/last.log"
     fi
-    if [[ "$rc" == 0 ]]; then result=Completed; else result="Action failed (exit $rc)"; fi
+    if [[ "$rc" == 0 ]]; then result='✓ Completed'; else result="× Action failed (exit $rc)"; fi
     if [[ -f "$TUI_ACTION_WORK/output" ]]; then
       result="$result"$'\n\n'"$(awk 'NR <= 6 {print} END {if (NR > 6) print "… View output for the full log."}' "$TUI_ACTION_WORK/output")"
     fi
@@ -124,7 +152,7 @@ tui_connect() {
 }
 
 tui_install() (
-  local src="$1" bootstrap folder candidate
+  local src="$1" bootstrap folder candidate bin
   [[ -t 0 && -t 1 ]] || { molt_error 'use --non-interactive outside an interactive terminal'; exit 1; }
   bootstrap="$(mktemp -d "${TMPDIR:-/tmp}/molt-bootstrap.XXXXXX")"
   trap 'tui_end; rm -rf -- "$bootstrap"' EXIT
@@ -143,6 +171,14 @@ tui_install() (
   tui_screen 'Install MOLT'
   tui_confirm "Install or upgrade MOLT in $MOLT_HOME?" || exit 0
   tui_terminal 'Install MOLT' env MOLT_HOME="$MOLT_HOME" MOLT_BOOTSTRAP_GUM_BINARY="$GUM" /bin/bash "$src/install.sh" --non-interactive || exit 1
+  bin="$MOLT_HOME/bin/molt"
+  if [[ "$("$bin" shell status)" == disabled ]]; then
+    tui_screen 'Reopen MOLT'
+    printf 'Make MOLT available before setting up your VM.\n\nThis terminal: source %q\nDirect launch: %q\n\n' "$MOLT_HOME/activate.zsh" "$bin" >&2
+    if "$GUM" confirm --default=true --show-help --selected.foreground 0 -- 'Make molt and opencode available in new Zsh terminals?'; then
+      tui_terminal 'Enable shell activation' "$bin" shell enable || exit 1
+    fi
+  fi
   tui_end
   MOLT_GUM_BINARY='' MOLT_BOOTSTRAP_GUM_BINARY='' "$MOLT_HOME/bin/molt" tui
 )
@@ -259,8 +295,10 @@ tui_setup() {
   tui_screen 'Prepare VM'
   tui_confirm "Prepare $MOLT_HOST, installing Docker and granting this user access if needed? Administrator authentication may be required." || return 0
   tui_terminal 'Prepare VM' "$TUI_BIN" bootstrap || return 0
-  tui_screen 'Shell activation'
-  if tui_confirm 'Enable MOLT commands automatically in new Zsh terminals?'; then tui_run 'Enable shell activation' "$TUI_BIN" shell enable || return 0; fi
+  if [[ "$("$TUI_BIN" shell status)" == disabled ]]; then
+    tui_screen 'Shell activation'
+    if tui_confirm 'Enable MOLT commands automatically in new Zsh terminals?'; then tui_run 'Enable shell activation' "$TUI_BIN" shell enable || return 0; fi
+  fi
   write_value "$MOLT_HOME/state/ui/setup.done" 1
   choice="$(tui_choose 'Setup complete' 'Your VM is ready. Select a project to start its environment.' 'Choose a project|projects' 'Open control center|console')" || return 0
   [[ "$choice" != projects ]] || tui_projects
@@ -269,11 +307,7 @@ tui_setup() {
 tui_project_ready() {
   local id="$1" state="$MOLT_PROJECTS_HOME/$1"
   tui_connect "$(read_value "$state/host")" || return 1
-  if [[ "$(read_value "$state/active")" != 1 ]]; then
-    tui_screen 'Start project'
-    tui_confirm 'Start the project environment for this action?' || return 1
-    tui_run 'Start project' "$TUI_BIN" start "@$id" || return 1
-  fi
+  if [[ "$(read_value "$state/active")" != 1 ]]; then tui_run 'Start OpenCode' "$TUI_BIN" start "@$id" || return 1; fi
 }
 
 tui_opencode_project() {
@@ -304,30 +338,19 @@ tui_project_menu() {
   local id="$1" state="$MOLT_PROJECTS_HOME/$1" action value host
   while [[ -f "$state/path" ]]; do
     host="$(read_value "$state/host")"
-    action="$(tui_choose "$(read_value "$state/name")" "$(read_value "$state/path")"$'\n'"Host: $host / Active: $(read_value "$state/active")" \
-      'Start|start' 'Stop|stop' 'Restart|restart' 'Inspect|inspect' 'Logs|logs' 'Forwarded ports|ports' 'OpenCode|opencode' 'Remote shell|shell' 'Environment file|environment' 'Reset project|reset' 'Back|back')" || return 0
+    if [[ "$(read_value "$state/active")" == 1 ]]; then value='● Started'; else value='○ Stopped'; fi
+    action="$(tui_choose "$(read_value "$state/name")" "$(read_value "$state/path")"$'\n'"$value  ·  $host" \
+      'Open OpenCode|attach' 'Start|start' 'Stop|stop' 'Restart|restart' 'Server logs|logs' 'Synchronization|sync' 'Providers and settings|opencode' 'Remove project|reset' 'Back|back')" || return 0
     case "$action" in
       start) tui_connect "$host" && tui_run 'Start project' "$TUI_BIN" start "@$id" || true ;;
       stop)
         if [[ "$(read_value "$state/active")" != 1 ]] || tui_connect "$host"; then tui_run 'Stop project' "$TUI_BIN" stop "@$id" || true; fi ;;
       restart)
         tui_connect "$host" && tui_run 'Stop project' "$TUI_BIN" stop "@$id" && tui_run 'Start project' "$TUI_BIN" start "@$id" || true ;;
-      inspect) tui_run 'Inspect project' "$TUI_BIN" inspect "@$id" || true ;;
+      attach) tui_connect "$host" && tui_terminal 'OpenCode session' "$TUI_BIN" oc-project "@$id" || true ;;
       logs) tui_connect "$host" && tui_run 'Project logs' "$TUI_BIN" logs "@$id" || true ;;
-      ports)
-        if [[ "$(read_value "$state/active")" == 1 ]]; then tui_connect "$host" || continue; fi
-        value="$(tr '\n' ' ' <"$state/ports")"
-        value="$(tui_input 'Ports / separated by spaces' "$value")" || continue
-        tui_confirm 'Save ports in the Mac checkout .molt.yml and apply forwarding?' && tui_run 'Save project ports' "$TUI_BIN" ports "@$id" "$value" || true ;;
+      sync) tui_run 'Synchronization' "$TUI_BIN" sync "@$id" || true ;;
       opencode) tui_opencode_project "$id" ;;
-      shell) tui_project_ready "$id" && tui_terminal 'Project shell' "$TUI_BIN" project-shell "@$id" || true ;;
-      environment)
-        value="$(tui_choose 'Environment file' 'Changes to the Mac checkout require an explicit action.' 'Inspect environment|review' 'Generate devenv.nix in the Mac checkout|generate' 'Review and commit environment|commit' 'Back|back')" || continue
-        case "$value" in
-          review) tui_run 'Review environment' "$TUI_BIN" review-env "@$id" || true ;;
-          generate) tui_confirm 'Create devenv.nix in this Mac checkout?' && tui_run 'Generate environment' "$TUI_BIN" generate-env "@$id" || true ;;
-          commit) tui_terminal 'Review and commit environment' "$TUI_BIN" commit-env "@$id" || true ;;
-        esac ;;
       reset)
         tui_confirm 'Remove this project container, image, synchronization, mirror, and MOLT state? The Mac checkout is kept.' || continue
         if [[ -n "$(read_value "$state/remote_path")" ]]; then tui_connect "$host" || continue; fi
@@ -364,7 +387,8 @@ tui_projects() {
     for state in "$MOLT_PROJECTS_HOME"/*/path; do
       [[ -f "$state" ]] || continue
       id="$(basename "${state%/*}")"
-      label="$(read_value "${state%/*}/name")  [$(read_value "${state%/*}/runtime"), active=$(read_value "${state%/*}/active")]"
+      if [[ "$(read_value "${state%/*}/active")" == 1 ]]; then label='●'; else label='○'; fi
+      label="$label  $(read_value "${state%/*}/name")  ·  $(read_value "${state%/*}/host")"
       choices+=("${label//|/¦}|$id")
     done
     choices+=('Scan / add repositories|scan' 'Start all registered projects|up' 'Stop all projects|down' 'Back|back')
@@ -385,9 +409,11 @@ tui_settings() {
   local action key value
   while :; do
     tui_reload
-    action="$(tui_choose 'Settings' '' 'Project folder|MOLT_ROOT' 'Remote workspace|MOLT_REMOTE_HOME' 'OpenCode base port|MOLT_OPENCODE_BASE_PORT' 'Blocked ports|MOLT_PORT_DENY' 'Port polling interval|MOLT_PORT_POLL' 'Shell activation|shell' 'Back|back')" || return 0
+    if [[ "${MOLT_ANIMATIONS:-1}" == 1 ]]; then value='On'; else value='Off'; fi
+    action="$(tui_choose 'Settings' '' 'Project folder|MOLT_ROOT' 'Remote workspace|MOLT_REMOTE_HOME' 'OpenCode base port|MOLT_OPENCODE_BASE_PORT' "Animations: $value|animations" 'Shell activation|shell' 'Back|back')" || return 0
     case "$action" in
       back) return 0 ;;
+      animations) tui_run 'Save animation preference' "$TUI_BIN" config set MOLT_ANIMATIONS "$((1 - ${MOLT_ANIMATIONS:-1}))" || true ;;
       shell)
         value="$(tui_choose 'Shell activation' "$("$TUI_BIN" shell status)" 'Enable in new Zsh terminals|enable' 'Disable|disable' 'Back|back')" || continue
         [[ "$value" == back ]] || tui_run 'Shell activation' "$TUI_BIN" shell "$value" || true ;;
@@ -397,8 +423,6 @@ tui_settings() {
           MOLT_ROOT) action='Project folder' ;;
           MOLT_REMOTE_HOME) action='Remote workspace' ;;
           MOLT_OPENCODE_BASE_PORT) action='OpenCode port range / base port' ;;
-          MOLT_PORT_DENY) action='Blocked ports / separated by spaces' ;;
-          MOLT_PORT_POLL) action='Port refresh interval / seconds' ;;
         esac
         value="$(tui_input "$action" "${!key}")" || continue
         [[ "$key" != MOLT_ROOT ]] || value="$(tui_path "$value")"
@@ -482,7 +506,7 @@ tui_main() (
   trap 'exit 143' TERM
   tui_begin || exit 1
   if [[ ! -f "$MOLT_HOME/state/ui/setup.done" ]]; then
-    action="$(tui_choose 'Welcome to MOLT' 'Set up SSH, prepare the VM, and choose your projects from this local console.' 'Guided setup|setup' 'Open control center|console')" || exit 0
+    action="$(tui_choose 'Welcome to MOLT' 'Your repos. Your VM. OpenCode, ready when you are.'$'\n\n''Connect once, then launch opencode from any registered repository.' 'Guided setup|setup' 'Open control center|console')" || exit 0
     [[ "$action" != setup ]] || tui_setup
   fi
   while [[ -d "$MOLT_HOME" ]]; do
@@ -493,7 +517,7 @@ tui_main() (
       count=$((count + 1))
       [[ "$(read_value "$state")" != 1 ]] || running=$((running + 1))
     done
-    description="Installation: $MOLT_HOME"$'\n'"Connection: ${MOLT_HOST:-none} / Projects: $count / Active: $running"
+    description="  ◈  OpenCode workspaces"$'\n\n'"  VM  ${MOLT_HOST:-Choose a connection}    ·    $running started / $count registered"$'\n'"  Launch opencode in a repo to start and connect automatically."
     action="$(tui_choose 'MOLT Control Center' "$description" 'Overview|overview' 'Projects|projects' 'Connections|connections' 'Guided setup|setup' 'OpenCode|opencode' 'Settings|settings' 'Maintenance|maintenance' 'Uninstall|uninstall' 'Quit|quit')" || exit 0
     case "$action" in
       overview) tui_run 'Overview' "$TUI_BIN" status || true ;;

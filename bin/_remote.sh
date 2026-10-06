@@ -115,7 +115,7 @@ case "$action" in
     id="$1"
     [[ "$id" =~ ^[a-f0-9]{12}$ ]] || fail 'invalid project identity'
     printf '1\n' >"$root/state/docker-resources"
-    for directory in "projects/$id" "meta/$id" "meta/$id/env" "cache/$id" "cache/$id/home" "cache/$id/data" "cache/$id/cache" "cache/$id/state" "cache/$id/tmp"; do
+    for directory in "projects/$id" "meta/$id" "cache/$id" "cache/$id/home" "cache/$id/data" "cache/$id/cache" "cache/$id/state" "cache/$id/tmp"; do
       [[ "$(realpath -m -- "$root/$directory")" == "$root/$directory" ]] || fail "symlinked remote project directory: $directory"
       mkdir -p -- "$root/$directory"
     done
@@ -181,6 +181,16 @@ case "$action" in
         [[ "$label" == "$owner" ]] || fail 'image ownership mismatch'
       fi
       docker image rm "$image" || failed=1
+    fi
+    if [[ "$layout" == 2 ]]; then
+      # Rebuilds can leave earlier images without a tag. Remove only this project's labels.
+      images="$(docker image ls -aq --filter "label=io.molt.installation=$owner" --filter "label=io.molt.project=$id")" || exit 1
+      for image_id in $images; do
+        # Removing a child image can also remove an already-listed untagged parent.
+        if docker image inspect "$image_id" >/dev/null 2>&1; then docker image rm "$image_id" || failed=1; fi
+      done
+      images="$(docker image ls -aq --filter "label=io.molt.installation=$owner" --filter "label=io.molt.project=$id")" || exit 1
+      [[ -z "$images" ]] || failed=1
     fi
     exit "$failed"
     ;;

@@ -1,11 +1,12 @@
 #!/usr/bin/expect -f
 set timeout 10
 log_user 0
+if {[info exists env(TUI_TEST_LOG)]} { log_file -a -noappend $env(TUI_TEST_LOG) }
 proc see {text} {
   global spawn_id expect_out
   expect {
     -ex $text { return }
-    timeout { puts stderr "FAIL: TUI did not show '$text'"; exit 1 }
+    timeout { puts stderr "FAIL: TUI did not show '$text'\n$expect_out(buffer)"; exit 1 }
     eof { puts stderr "FAIL: TUI exited before '$text'"; exit 1 }
   }
 }
@@ -100,22 +101,34 @@ send -- "\025$env(TUI_TMP)/repos\r"
 menu "Completed"
 enter
 menu "Settings"
+down 3
+enter
+menu "Completed"
+enter
+menu "Animations: On"
+if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_ANIMATIONS] != "1"} { puts stderr "FAIL: animation toggle did not save"; exit 1 }
+down 3
+enter
+menu "Completed"
+enter
+menu "Animations: Off"
 escape
 menu "MOLT Control Center"
 stty rows 24 columns 80 < $spawn_out(slave,name)
+after 300
 # Failed SSH does not terminate the project manager.
 down 1
 enter
-menu "Projects"
+menu "M O L T   /   Projects"
 enter
-menu "app"
+menu "M O L T   /   app"
 enter
 see "Connect to"
 see "failed"
 enter
-menu "app"
+menu "M O L T   /   app"
 escape
-menu "Projects"
+menu "M O L T   /   Projects"
 escape
 menu "MOLT Control Center"
 # Deletion requires a confirmation, and cancellation keeps the installation.

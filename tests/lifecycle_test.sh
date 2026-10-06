@@ -23,13 +23,21 @@ case "$*" in
     done ;;
   'sync list'*)
     [[ "${FAIL_SYNC:-0}" == 0 ]] || exit 1
+    if [[ "$*" == *SessionState* ]]; then
+      [[ "${TEST_SYNC_CONFLICTS:-0}" == 0 ]] || printf 'blocked\n'
+      exit 0
+    fi
     for file in "$MUTAGEN_DATA_DIRECTORY/sessions/"*.name; do [[ ! -f "$file" ]] || cat "$file"; done ;;
   'sync terminate'*)
     [[ "${FAIL_SYNC:-0}" == 0 ]] || exit 1
     for file in "$MUTAGEN_DATA_DIRECTORY/sessions/"*.name; do
       [[ ! -f "$file" || "$(<"$file")" != "${3:-}" ]] || rm "$file"
-    done ;;
+    done
+    rm -f "$MUTAGEN_DATA_DIRECTORY/paused-${3:-}" ;;
+  'sync pause'*) : >"$MUTAGEN_DATA_DIRECTORY/paused-${3:-}" ;;
+  'sync resume'*) rm -f "$MUTAGEN_DATA_DIRECTORY/paused-${3:-}" ;;
   'sync flush'*)
+    [[ ! -f "$MUTAGEN_DATA_DIRECTORY/paused-${3:-}" ]] || { printf 'cannot flush a paused session\n' >&2; exit 1; }
     count=0
     for file in "$MUTAGEN_DATA_DIRECTORY/sessions/"*.name; do
       [[ ! -f "$file" || "$(<"$file")" != "${3:-}" ]] || count=$((count+1))
@@ -44,7 +52,10 @@ cat >"$TMP/bin/opencode" <<'TOOL'
 #!/usr/bin/env bash
 if [[ "$*" == --version ]]; then printf '1.18.33\n';
 elif [[ "$*" == --hold ]]; then sleep 60 & wait;
-else env; fi
+else
+  [[ -z "${TEST_CLIENT_ARGS:-}" ]] || printf '%s\n' "$@" >"$TEST_CLIENT_ARGS"
+  env
+fi
 TOOL
 cat >"$TMP/bin/gum" <<'TOOL'
 #!/usr/bin/env bash
@@ -57,7 +68,10 @@ exit 255
 TOOL
 cat >"$TMP/bin/curl" <<'TOOL'
 #!/usr/bin/env bash
-exit 22
+case "$*" in
+  *http://127.0.0.1:*/global/health*) [[ "${FAIL_TUNNEL:-0}" == 0 ]] || exit 56; printf '401' ;;
+  *) exit 22 ;;
+esac
 TOOL
 chmod +x "$TMP/bin/"*
 
@@ -73,6 +87,9 @@ test_contained_install() (
   install
   cmp -s "$TMP/original.zshrc" "$ZDOTDIR/.zshrc" || fail 'installation changed .zshrc'
   [[ -x "$MOLT_HOME/bin/molt-uninstall" && -f "$MOLT_HOME/activate.zsh" ]] || fail 'missing installation files'
+  for shim in "$MOLT_HOME/shims/"*; do
+    [[ "${shim##*/}" == opencode ]] || fail "installed development command shim: $shim"
+  done
   contains 'FORMAT=2' "$MOLT_HOME/.install-manifest"
   printf 'keep password\n' >"$MOLT_HOME/opencode.password"
   printf '\n# keep config\n' >>"$MOLT_HOME/config"
@@ -281,10 +298,11 @@ test_offline_uninstall() (
 )
 
 test_remote_lifecycle() (
-  export MOLT_HOME="$HOME/remote-test" TEST_REMOTE_HOME="$TMP/vm-home" TEST_DOCKER="$TMP/docker-state" TEST_ROOT="$ROOT"
+  export MOLT_HOME="$HOME/remote-test" TEST_REMOTE_HOME="$TMP/vm-home" TEST_DOCKER="$TMP/docker-state" TEST_ROOT="$ROOT" TEST_CLIENT_ARGS="$TMP/client.args" TEST_EVENTS="$TMP/start-events"
   mkdir -p "$TEST_REMOTE_HOME" "$TEST_DOCKER" "$TMP/remote-bin" "$TMP/remote-repo"
   cp "$TMP/bin/mutagen" "$TMP/remote-bin/mutagen"
   cp "$TMP/bin/opencode" "$TMP/remote-bin/opencode"
+  cp "$TMP/bin/curl" "$TMP/remote-bin/curl"
   cat >"$TMP/remote-bin/ssh" <<'SSH'
 #!/usr/bin/env bash
 [[ -z "${TEST_EVENTS:-}" ]] || printf 'ssh %s\n' "$*" >>"$TEST_EVENTS"
@@ -298,6 +316,7 @@ SSH
   cat >"$TMP/remote-bin/docker" <<'DOCKER'
 #!/usr/bin/env bash
 set -eu
+printf 'docker %s\n' "$*" >>"$TEST_EVENTS"
 case "$1 ${2:-}" in
   'info '*) exit 0 ;;
   'container ls'*) [[ ! -f "$TEST_DOCKER/container" ]] || cat "$TEST_DOCKER/container" ;;
@@ -305,6 +324,8 @@ case "$1 ${2:-}" in
   'volume ls'*) ;;
   'inspect '*|'image inspect')
     if [[ "${FAIL_OWNER:-0}" == 1 ]]; then printf 'other-installation\n';
+    elif [[ "$*" == *io.molt.runtime* ]]; then [[ ! -f "$TEST_DOCKER/container" ]] || printf 'opencode-1\n';
+    elif [[ "$*" == *State.Running* ]]; then [[ ! -f "$TEST_DOCKER/container" ]] || printf 'true\n';
     elif [[ "$*" == *io.molt.project* ]]; then last="${!#}"; last="${last%:latest}"; printf '%s\n' "${last##*-}";
     else printf '%s\n' "$MOLT_INSTALL_ID"; fi ;;
   'build '*)
@@ -326,7 +347,8 @@ case "$1 ${2:-}" in
     done ;;
   'rm '*) [[ "${FAIL_DOCKER:-0}" == 0 ]] || exit 1; rm -f "$TEST_DOCKER/container" ;;
   'image rm') [[ "${FAIL_DOCKER:-0}" == 0 ]] || exit 1; rm -f "$TEST_DOCKER/image" ;;
-  'exec '*) ;;
+  'exec '*) [[ "${FAIL_HEALTH:-0}" == 0 ]] || exit 1 ;;
+  'logs '*) ;;
   'stop '*) ;;
   *) printf 'unexpected docker: %s\n' "$*" >&2; exit 2 ;;
 esac
@@ -355,15 +377,39 @@ RMDIR
   git -C "$TMP/remote-repo" init -q
   printf '{"name":"test"}\n' >"$TMP/remote-repo/package.json"
   "$MOLT_HOME/bin/molt" start "$TMP/remote-repo"
-  (cd "$TMP/remote-repo" && "$MOLT_HOME/bin/molt" run true)
+  (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" --continue >/dev/null)
+  contains '--mode two-way-safe' "$TEST_EVENTS"
+  if grep -Fq -- '--ignore-vcs' "$TEST_EVENTS"; then fail 'remote OpenCode lost Git metadata'; fi
+  contains '--publish 127.0.0.1:' "$TEST_EVENTS"
+  contains 'FROM ubuntu:22.04' "$TEST_REMOTE_HOME/molt/meta/$("$MOLT_HOME/bin/molt" project-id "$TMP/remote-repo")/Dockerfile"
   "$MOLT_HOME/bin/molt" stop "$TMP/remote-repo"
-  "$MOLT_HOME/bin/molt" start "$TMP/remote-repo"
+  "$MOLT_HOME/bin/molt" stop "$TMP/remote-repo" || fail 'stopping an already-stopped project failed'
+  mkdir -p "$TMP/remote-repo/src"
+  (cd "$TMP/remote-repo/src" && "$MOLT_HOME/shims/opencode" --continue >/dev/null)
+  contains '/workspace/src' "$TEST_CLIENT_ARGS"
+  contains '--continue' "$TEST_CLIENT_ARGS"
   absent "$TMP/remote-repo/devenv.nix"
   local id state
   id="$("$MOLT_HOME/bin/molt" project-id "$TMP/remote-repo")"
   state="$MOLT_HOME/projects/$id"
+  export FAIL_HEALTH=1
+  rm -f "$TEST_CLIENT_ARGS"
+  if (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" >/dev/null); then fail 'attached before the server was healthy'; fi
+  absent "$TEST_CLIENT_ARGS"
+  [[ -f "$state/path" ]] || fail 'health failure discarded retry records'
+  export FAIL_HEALTH=0
+  export FAIL_TUNNEL=1
+  if (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" >/dev/null); then fail 'attached through a broken SSH tunnel'; fi
+  absent "$TEST_CLIENT_ARGS"
+  export FAIL_TUNNEL=0
+  (cd "$TMP/remote-repo" && MOLT_LOCAL=1 "$MOLT_HOME/shims/opencode" --version >/dev/null)
+  rm -f "$TEST_CLIENT_ARGS"
+  (cd "$TMP" && "$MOLT_HOME/shims/opencode" --diagnostic >/dev/null)
+  contains '--diagnostic' "$TEST_CLIENT_ARGS"
+  (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" --version >/dev/null)
+  contains '--diagnostic' "$TEST_CLIENT_ARGS"
   local run target machine expected actual rc
-  run="$(awk '/^RUN / {sub(/^RUN /, ""); print}' "$TEST_REMOTE_HOME/molt/meta/$id/Dockerfile")"
+  run="$(awk '/^RUN arch=/ {sub(/^RUN /, ""); print}' "$TEST_REMOTE_HOME/molt/meta/$id/Dockerfile")"
   # Execute the generated install step, stopping at curl before any file changes.
   while read -r target machine expected; do
     rc=0
@@ -397,7 +443,11 @@ CASES
   printf 'invalid JSON\n' >"$TMP/server-invalid.json"
   if "$MOLT_HOME/bin/molt" server-config "@$id" set "$TMP/server-invalid.json"; then fail 'accepted invalid server configuration'; fi
   cmp -s "$TMP/server.json" "$TEST_REMOTE_HOME/molt/config/opencode/opencode.json" || fail 'invalid server configuration replaced the working file'
-  [[ -f "$TEST_REMOTE_HOME/molt/meta/$id/env/devenv.nix" ]] || fail 'generated environment is not contained'
+  absent "$TEST_REMOTE_HOME/molt/meta/$id/env/devenv.nix"
+  export TEST_SYNC_CONFLICTS=1
+  if MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset "@$id"; then fail 'deleted unsynchronized conflicting edits'; fi
+  [[ -f "$state/path" && -f "$TEST_DOCKER/container" ]] || fail 'conflict discarded the workspace or retry record'
+  export TEST_SYNC_CONFLICTS=0
   export FAIL_SYNC=1
   if MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset --all; then fail 'sync failure succeeded'; fi
   [[ -f "$state/path" ]] || fail 'lost sync cleanup records'
@@ -411,7 +461,7 @@ CASES
   mkdir -p "$TMP/outside-vm"
   rmdir "$TEST_REMOTE_HOME/molt/cache/$id/home"
   ln -s "$TMP/outside-vm" "$TEST_REMOTE_HOME/molt/cache/$id/home"
-  if (cd "$TMP/remote-repo" && "$MOLT_HOME/bin/molt" run true); then fail 'accepted a remote cache symlink outside the owned root'; fi
+  if (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" >/dev/null); then fail 'accepted a remote cache symlink outside the owned root'; fi
   rm "$TEST_REMOTE_HOME/molt/cache/$id/home"
   mkdir "$TEST_REMOTE_HOME/molt/cache/$id/home"
   export HOLD_BUILD=1

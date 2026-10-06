@@ -32,6 +32,7 @@ export PATH="$TMP/bin:/usr/bin:/bin"
 git -C "$TMP/repos/app" init -q
 "$MOLT_HOME/bin/molt" config set MOLT_ROOT "$TMP/repos"
 "$MOLT_HOME/bin/molt" config set MOLT_HOST unreachable-vm
+"$MOLT_HOME/bin/molt" config set MOLT_ANIMATIONS 0
 "$MOLT_HOME/bin/molt" register "$TMP/repos/app" >/dev/null
 mkdir -p "$HOME/.ssh"
 printf 'Include "%s/aliases.conf"\n' "$TMP" >"$HOME/.ssh/config"
