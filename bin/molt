@@ -264,6 +264,7 @@ cmd_start() (
   set_remote_paths
   prepare_project_dirs
   start_sync
+  sync_opencode_config
   log 'Building the OpenCode container…'
   dockerfile_for_project "$work/Dockerfile"
   upload_file "$work/Dockerfile" "$PROJECT_REMOTE_META/Dockerfile"
@@ -482,7 +483,7 @@ molt — remote OpenCode workspaces
   molt tools                  show tool versions
 
   opencode [args]              auto-start and attach in registered repositories
-  MOLT_LOCAL=1 opencode        use the isolated local client
+  MOLT_LOCAL=1 opencode        run locally with your normal OpenCode state
 USAGE
 }
 source "$SCRIPT_DIR/_manage.sh"

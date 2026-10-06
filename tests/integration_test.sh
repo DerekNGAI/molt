@@ -26,6 +26,7 @@ cleanup() {
 }
 trap cleanup EXIT
 export HOME="$TMP/home" MOLT_HOME="$TMP/home/.molt" PATH="/usr/bin:/bin"
+export XDG_DATA_HOME="$HOME/.local/share" XDG_STATE_HOME="$HOME/.local/state" XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache"
 mkdir -p "$HOME" "$TMP/repo"
 if [[ -n "${MOLT_INTEGRATION_TOOLS:-}" ]]; then
   export MOLT_MUTAGEN_BINARY="$MOLT_INTEGRATION_TOOLS/mutagen/mutagen"
@@ -57,21 +58,47 @@ done
 "$MOLT_HOME/bin/molt" doctor
 git -C "$TMP/repo" init -q
 printf '{"name":"containment-test"}\n' >"$TMP/repo/package.json"
+export OPENCODE_CONFIG_DIR="$TMP/local-opencode"
+mkdir -p "$OPENCODE_CONFIG_DIR/commands"
+printf '{"$schema":"https://opencode.ai/config.json","model":"openai/gpt-6.1-sol#xhigh",}\n' >"$OPENCODE_CONFIG_DIR/opencode.json"
+printf 'Integration instructions\n' >"$OPENCODE_CONFIG_DIR/AGENTS.md"
+printf '%s\n' '---' 'description: Integration command' '---' 'Explain the project.' >"$OPENCODE_CONFIG_DIR/commands/explain.md"
+mkdir -p "$XDG_DATA_HOME/opencode" "$XDG_STATE_HOME/opencode"
+printf '{"openai":{"type":"api","key":"molt-local-fixture"}}\n' >"$XDG_DATA_HOME/opencode/auth.json"
+printf '{"recent":[],"favorite":[],"variant":{"openai/gpt-6.1-sol":"xhigh"}}\n' >"$XDG_STATE_HOME/opencode/model.json"
+(cd "$TMP" && "$MOLT_HOME/bin/molt" client auth list >"$TMP/local-auth.log")
+grep -qi openai "$TMP/local-auth.log" || fail 'local client did not use existing provider credentials'
 "$MOLT_HOME/bin/molt" start "$TMP/repo"
 [[ ! -e "$TMP/repo/devenv.nix" ]] || fail 'start modified the Mac checkout'
 id="$("$MOLT_HOME/bin/molt" project-id "$TMP/repo")"
 [[ "$("$DOCKER" exec "$name" cat "/home/molt-test/molt/projects/$id/package.json")" == "$(cat "$TMP/repo/package.json")" ]] || fail 'project did not synchronize'
-"$MOLT_HOME/bin/molt" remote-oc "@$id" auth list
-"$MOLT_HOME/bin/molt" client auth list
+"$MOLT_HOME/bin/molt" remote-oc "@$id" auth list >"$TMP/remote-auth.log"
+grep -Fq '0 credentials' "$TMP/remote-auth.log" || fail 'Mac credentials were copied to the VM'
 server_port="$(cat "$MOLT_HOME/projects/$id/opencode_port")"
 password="$(cat "$MOLT_HOME/opencode.password")"
 healthy=0
+[[ "$("$MOLT_HOME/bin/molt" client --version)" == 1.18.34 ]] || fail 'unexpected Mac client version'
 for attempt in {1..60}; do
   if "$DOCKER" exec "$name" curl -fsS -u "opencode:$password" "http://127.0.0.1:$server_port/global/health"; then healthy=1; break; fi
   sleep 1
 done
 [[ "$healthy" == 1 ]] || fail 'OpenCode server did not become healthy'
 container="$(cat "$MOLT_HOME/projects/$id/container")"
+[[ "$("$DOCKER" exec "$name" docker exec "$container" /opt/opencode/opencode --version)" == 1.18.34 ]] || fail 'VM version differs from the Mac client'
+if [[ "$("$DOCKER" exec "$name" cat /home/molt-test/molt/config/opencode/opencode.json)" != "$(cat "$OPENCODE_CONFIG_DIR/opencode.json")" ]]; then
+  "$DOCKER" exec "$name" cat /home/molt-test/molt/config/opencode/opencode.json
+  fail 'global JSONC configuration did not synchronize'
+fi
+[[ "$("$DOCKER" exec "$name" cat /home/molt-test/molt/config/opencode/AGENTS.md)" == 'Integration instructions' ]] || fail 'global instructions did not synchronize'
+"$DOCKER" exec "$name" docker exec "$container" sh -c 'node --version && npm --version && npx --version'
+container_before="$("$DOCKER" exec "$name" docker inspect -f '{{.Id}}' "$container")"
+"$MOLT_HOME/bin/molt" remote-oc "@$id" auth list
+[[ "$("$DOCKER" exec "$name" docker inspect -f '{{.Id}}' "$container")" == "$container_before" ]] || fail 'unchanged configuration recreated the container'
+printf 'Updated integration instructions\n' >"$OPENCODE_CONFIG_DIR/AGENTS.md"
+rm "$OPENCODE_CONFIG_DIR/commands/explain.md"
+"$MOLT_HOME/bin/molt" remote-oc "@$id" auth list
+[[ "$("$DOCKER" exec "$name" docker inspect -f '{{.Id}}' "$container")" != "$container_before" ]] || fail 'configuration updates did not recreate the container'
+"$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/molt/config/opencode/commands/explain.md'
 [[ "$("$DOCKER" exec "$name" docker inspect -f '{{.HostConfig.NetworkMode}}' "$container")" == bridge ]] || fail 'container is not network-isolated'
 # A server edit must reach the Mac; a one-way replica would erase it.
 "$DOCKER" exec "$name" docker exec "$container" sh -c 'printf "edited on server\n" > /workspace/server-edit.txt'
@@ -90,7 +117,8 @@ fi
 grep -Eiq 'not.?found|session.*exist' "$TMP/attach.log" || { cat "$TMP/attach.log"; fail 'automatic attachment did not reach the server'; }
 [[ "$(cat "$MOLT_HOME/projects/$id/active")" == 1 ]] || fail 'attachment did not auto-start the stopped project'
 "$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/.mutagen && test ! -e /home/molt-test/.molt && test ! -e /home/molt-test/.config/opencode'
-[[ ! -e "$HOME/.mutagen" && ! -e "$HOME/.opencode" && ! -e "$HOME/.config" ]] || fail 'global tool state was created on the Mac'
+[[ ! -e "$HOME/.mutagen" ]] || fail 'Mutagen created global state on the Mac'
+grep -Fq '"openai/gpt-6.1-sol":"xhigh"' "$XDG_STATE_HOME/opencode/model.json" || fail 'attached client lost the saved xhigh preference'
 "$DOCKER" exec "$name" sh -c "mkdir -p /home/molt-test/molt/meta/$id/env/.devenv/protected && touch /home/molt-test/molt/meta/$id/env/.devenv/protected/file && chmod 700 /home/molt-test/molt/meta/$id/env/.devenv/protected"
 "$DOCKER" exec "$name" sh -c 'mkdir -p /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin && touch /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin/plugin.d.ts && chmod 700 /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin'
 "$MOLT_HOME/bin/molt" stop "$TMP/repo"
@@ -101,5 +129,7 @@ if grep -Fq 'Permission denied' "$TMP/uninstall.log"; then fail 'successful reco
 if grep -Fq 'Started Mutagen daemon' "$TMP/uninstall.log"; then fail 'uninstall restarted Mutagen'; fi
 if grep -Fq 'disabling multiplexing' "$TMP/uninstall.log"; then fail 'uninstall raced SSH shutdown'; fi
 [[ ! -e "$MOLT_HOME" ]] || fail 'local installation remains'
+grep -Fq molt-local-fixture "$XDG_DATA_HOME/opencode/auth.json" || fail 'uninstall removed existing local credentials'
+grep -Fq '"openai/gpt-6.1-sol":"xhigh"' "$XDG_STATE_HOME/opencode/model.json" || fail 'uninstall removed saved model preferences'
 "$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/molt && test -z "$(docker ps -aq --filter label=io.molt.installation)" && test -z "$(docker images -aq --filter label=io.molt.installation)"'
 printf 'molt integration tests: ok\n'

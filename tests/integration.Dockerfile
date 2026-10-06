@@ -1,5 +1,5 @@
 FROM docker:28-dind
-RUN apk add --no-cache bash coreutils openssh-server git curl procps iproute2
+RUN apk add --no-cache bash coreutils diffutils openssh-server git curl procps iproute2
 RUN ssh-keygen -A && adduser -D -s /bin/bash -G docker molt-test && passwd -d molt-test \
     && mkdir -p /home/molt-test/.ssh && chmod 700 /home/molt-test/.ssh
 COPY sshd_config /etc/ssh/sshd_config

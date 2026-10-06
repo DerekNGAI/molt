@@ -102,7 +102,7 @@ molt_download_tool() {
   esac
   case "$name" in
     mutagen) version=v0.18.1; repo=mutagen-io/mutagen ;;
-    opencode) version=v1.18.33; repo=anomalyco/opencode ;;
+    opencode) version=v1.18.34; repo=anomalyco/opencode ;;
     gum) version=v2.0.2; repo=charmbracelet/gum ;;
   esac
   checksum="$(awk -v asset="$asset" '$2==asset {print $1}' "$lock")"
@@ -157,7 +157,7 @@ molt_stop_daemon() {
 molt_client() {
   local binary
   binary="$(molt_value "$MOLT_HOME/.install-manifest" OPENCODE_BINARY)" || return 1
-  molt_isolated "$binary" "$@"
+  "$binary" "$@"
 }
 
 molt_kill_tree() {

@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 # Docker resources remain tagged and contained under the installation's VM root.
-MOLT_RUNTIME_VERSION=opencode-1
+MOLT_RUNTIME_VERSION=opencode-3
 
 dockerfile_for_project() {
   cat >"$1" <<'DOCKERFILE'
 FROM ubuntu:22.04
-RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates libstdc++6 && rm -rf /var/lib/apt/lists/*
 RUN git config --system --add safe.directory /workspace
 ARG TARGETARCH
 COPY tools.lock /tmp/tools.lock
-RUN arch="${TARGETARCH:-$(uname -m)}"; case "$arch" in arm64|aarch64) asset=opencode-linux-arm64.tar.gz ;; amd64|x86_64) asset=opencode-linux-x64-baseline.tar.gz ;; *) printf "molt: unsupported container architecture: %s\n" "$arch" >&2; exit 1 ;; esac; curl -fL "https://github.com/anomalyco/opencode/releases/download/v1.18.33/$asset" -o /tmp/opencode.tar.gz && awk -v asset="$asset" '$2==asset {print $1 "  /tmp/opencode.tar.gz"}' /tmp/tools.lock | sha256sum -c - && mkdir -p /opt/opencode && tar -xzf /tmp/opencode.tar.gz -C /opt/opencode && rm /tmp/opencode.tar.gz /tmp/tools.lock
-ENV PATH="/opt/opencode:${PATH}"
+RUN arch="${TARGETARCH:-$(uname -m)}"; case "$arch" in arm64|aarch64) asset=opencode-linux-arm64.tar.gz ;; amd64|x86_64) asset=opencode-linux-x64-baseline.tar.gz ;; *) printf "molt: unsupported container architecture: %s\n" "$arch" >&2; exit 1 ;; esac; curl -fL "https://github.com/anomalyco/opencode/releases/download/v1.18.34/$asset" -o /tmp/opencode.tar.gz && awk -v asset="$asset" '$2==asset {print $1 "  /tmp/opencode.tar.gz"}' /tmp/tools.lock | sha256sum -c - && mkdir -p /opt/opencode && tar -xzf /tmp/opencode.tar.gz -C /opt/opencode && rm /tmp/opencode.tar.gz
+RUN node_arch="${TARGETARCH:-$(uname -m)}"; case "$node_arch" in arm64|aarch64) node_arch=arm64 ;; amd64|x86_64) node_arch=x64 ;; *) printf "molt: unsupported Node.js architecture: %s\n" "$node_arch" >&2; exit 1 ;; esac; asset="node-v24.21.0-linux-$node_arch.tar.gz"; curl -fL "https://nodejs.org/dist/v24.21.0/$asset" -o /tmp/node.tar.gz && awk -v asset="$asset" '$2==asset {print $1 "  /tmp/node.tar.gz"}' /tmp/tools.lock | sha256sum -c - && mkdir -p /opt/node && tar -xzf /tmp/node.tar.gz --strip-components=1 -C /opt/node && rm /tmp/node.tar.gz /tmp/tools.lock
+ENV PATH="/opt/opencode:/opt/node/bin:${PATH}"
 WORKDIR /workspace
 CMD ["sh", "-c", "export OPENCODE_SERVER_PASSWORD=$(cat /molt-meta/opencode.password); exec opencode serve --hostname 0.0.0.0 --port 4096"]
 DOCKERFILE
 }
 
 ensure_container() {
-  local running version owner image_id expected_id
+  local running version owner image_id expected_id config_version
   running="$(remote_run "docker inspect -f '{{.State.Running}}' $(quote_remote "$PROJECT_CONTAINER") 2>/dev/null || true")"
   if [[ -n "$running" ]]; then
     owner="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.installation\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
@@ -25,7 +26,8 @@ ensure_container() {
     version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.runtime\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
     image_id="$(remote_run "docker inspect -f '{{.Image}}' $(quote_remote "$PROJECT_CONTAINER")")"
     expected_id="$(remote_run "docker image inspect -f '{{.Id}}' $(quote_remote "$PROJECT_IMAGE")")"
-    if [[ "$version" == "$MOLT_RUNTIME_VERSION" && "$image_id" == "$expected_id" ]]; then
+    config_version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.config\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
+    if [[ "$version" == "$MOLT_RUNTIME_VERSION" && "$image_id" == "$expected_id" && "$config_version" == "$OPENCODE_CONFIG_VERSION" ]]; then
       [[ "$running" == true ]] || remote_run "docker start $(quote_remote "$PROJECT_CONTAINER") >/dev/null"
       return 0
     fi
@@ -34,7 +36,7 @@ ensure_container() {
     remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER")"
   fi
   remote_run "docker run -d --init --restart unless-stopped --name $(quote_remote "$PROJECT_CONTAINER") \
-    --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION \
+    --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.config=$OPENCODE_CONFIG_VERSION \
     --publish 127.0.0.1:$PROJECT_OPENCODE_PORT:4096 --workdir /workspace \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_PATH,dst=/workspace") \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_META,dst=/molt-meta,readonly") \
@@ -54,6 +56,7 @@ ensure_project_container() {
   else
     prepare_project_dirs
     start_sync
+    sync_opencode_config
     sync_password
     ensure_container
     wait_opencode_ready

@@ -1,5 +1,46 @@
 #!/usr/bin/env bash
 # OpenCode authentication, readiness, and the single required SSH tunnel.
+validate_opencode_config() {
+  /usr/bin/osascript -l JavaScript -e '
+    ObjC.import("Foundation");
+    function run(args) {
+      let text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(args[0], $.NSUTF8StringEncoding, null));
+      // Preserve strings while removing JSONC comments and trailing commas.
+      text = text.replace(/("(?:[^"\\]|\\.)*")|\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g, (match, string) => string || " ");
+      text = text.replace(/("(?:[^"\\]|\\.)*")|,(?=\s*[}\]])/g, (match, string) => string || "");
+      const config = JSON.parse(text);
+      if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("Expected a JSON object");
+    }
+  ' "$1" >/dev/null 2>&1
+}
+sync_opencode_config() {
+  OPENCODE_CONFIG_VERSION="$(upload_opencode_config)" || die 'could not synchronize local OpenCode configuration; working VM settings retained'
+}
+upload_opencode_config() (
+  local source="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-${MOLT_USER_HOME:-$HOME}/.config}/opencode}" work file stage hash
+  umask 077
+  if [[ ! -d "$source" ]]; then
+    remote_script config-sync-version "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID"
+    return
+  fi
+  work="$(mktemp -d "$MOLT_HOME/state/tmp/config.XXXXXX")" || exit 1
+  trap "rm -rf -- $(printf '%q' "$work")" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  COPYFILE_DISABLE=1 tar --format=gnutar -chf - \
+    --exclude=node_modules --exclude=.git --exclude=.gitignore --exclude=.DS_Store \
+    --exclude=package-lock.json --exclude=bun.lock --exclude=bun.lockb -C "$source" . | gzip -n >"$work/config.tar.gz" || exit 1
+  mkdir "$work/files" || exit 1
+  tar -xzf "$work/config.tar.gz" -C "$work/files" || exit 1
+  for file in config.json opencode.json opencode.jsonc; do
+    [[ ! -f "$work/files/$file" ]] || validate_opencode_config "$work/files/$file" || die "local $file must be a valid JSONC object"
+  done
+  hash="$(shasum -a 256 "$work/config.tar.gz" | cut -d ' ' -f1)" || exit 1
+  stage="$(remote_script config-sync-stage "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID")" || exit 1
+  upload_file "$work/config.tar.gz" "$stage/config.tar.gz" || exit 1
+  remote_script config-sync-install "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$stage" "$hash"
+)
+
 ensure_password() {
   managed_file "$MOLT_OPENCODE_PASSWORD_FILE"
   if [[ ! -s "$MOLT_OPENCODE_PASSWORD_FILE" ]]; then

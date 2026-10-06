@@ -391,14 +391,7 @@ cmd_server_config() {
   case "$action" in
     get) remote_script config-get "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" ;;
     set)
-      [[ -f "$file" ]] && /usr/bin/osascript -l JavaScript -e '
-        ObjC.import("Foundation");
-        function run(args) {
-          const text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(args[0], $.NSUTF8StringEncoding, null));
-          const config = JSON.parse(text);
-          if (config === null || typeof config !== "object" || Array.isArray(config)) throw new Error("Expected a JSON object");
-        }
-      ' "$file" >/dev/null 2>&1 || die 'server settings must be a valid JSON object'
+      [[ -f "$file" ]] && validate_opencode_config "$file" || die 'server settings must be a valid JSONC object'
       stage="$(remote_script config-stage "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID")"
       upload_file "$file" "$stage"
       remote_script config-install "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$stage"

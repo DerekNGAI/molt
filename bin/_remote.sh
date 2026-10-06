@@ -120,6 +120,60 @@ case "$action" in
       mkdir -p -- "$root/$directory"
     done
     ;;
+  config-sync-version|config-sync-stage|config-sync-install)
+    owned
+    for path in "$root/config" "$root/config/opencode" "$root/state/tmp" "$root/state/opencode-config" "$root/state/opencode-config.previous" "$root/state/opencode-config.lock"; do
+      [[ "$(realpath -m -- "$path")" == "$path" ]] || fail 'symlinked OpenCode configuration state'
+    done
+    if [[ "$action" == config-sync-install ]]; then
+      exec 9>"$root/state/opencode-config.lock"
+      flock -x 9
+    fi
+    source_hash=''; revision=none
+    if [[ -f "$root/state/opencode-config" ]]; then
+      read -r source_hash revision <"$root/state/opencode-config"
+      [[ "$source_hash" =~ ^[a-f0-9]{64}$ && "$revision" == opencode-sync.* && "$revision" != *[!a-zA-Z0-9.-]* ]] || fail 'invalid OpenCode configuration state'
+    fi
+    if [[ "$action" == config-sync-version ]]; then printf '%s\n' "$revision"; exit 0; fi
+    if [[ "$action" == config-sync-stage ]]; then mktemp -d "$root/state/tmp/opencode-sync.XXXXXX"; exit 0; fi
+    stage="$1"; hash="$2"
+    [[ "$stage" == "$root/state/tmp/opencode-sync."* && "${stage##*/}" != *[!a-zA-Z0-9.-]* && -d "$stage" && ! -L "$stage" && "$(realpath -m -- "$stage")" == "$stage" ]] || fail 'invalid OpenCode configuration staging directory'
+    trap 'rm -rf -- "$stage"' EXIT
+    archive="$stage/config.tar.gz"
+    [[ -f "$archive" && ! -L "$archive" && "$hash" =~ ^[a-f0-9]{64}$ && "$(sha256sum "$archive" | cut -d ' ' -f1)" == "$hash" ]] || fail 'OpenCode configuration upload checksum mismatch'
+    tar -tzf "$archive" >"$stage/paths"
+    while IFS= read -r path; do
+      case "$path" in /*|../*|*/../*|*/..) fail 'unsafe OpenCode configuration archive path' ;; esac
+    done <"$stage/paths"
+    tar -tvzf "$archive" >"$stage/entries"
+    while IFS= read -r entry; do
+      case "$entry" in -*|d*) ;; *) fail 'OpenCode configuration archive must contain regular files and directories' ;; esac
+    done <"$stage/entries"
+    mkdir "$stage/files"
+    tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$stage/files"
+    if [[ "$source_hash" == "$hash" ]] && diff -qr --exclude=node_modules --exclude=package.json --exclude=package-lock.json \
+      --exclude=bun.lock --exclude=bun.lockb --exclude=.gitignore "$stage/files" "$root/config/opencode" >/dev/null; then
+      printf '%s\n' "$revision"
+      exit 0
+    fi
+    chmod -R go-rwx "$stage/files"
+    # Retain Linux dependencies; OpenCode can update them when it loads the new config.
+    for file in node_modules package.json package-lock.json bun.lock bun.lockb .gitignore; do
+      [[ ! -e "$root/config/opencode/$file" && ! -L "$root/config/opencode/$file" ]] && continue
+      [[ "$(realpath -m -- "$root/config/opencode/$file")" == "$root/config/opencode/$file" ]] || fail 'symlinked generated OpenCode dependency'
+      [[ -e "$stage/files/$file" ]] || cp -R -- "$root/config/opencode/$file" "$stage/files/$file"
+    done
+    revision="${stage##*/}"
+    printf '%s %s\n' "$hash" "$revision" >"$stage/record"
+    remove_path "$root/state/opencode-config.previous"
+    mv -- "$root/config/opencode" "$root/state/opencode-config.previous"
+    if ! mv -- "$stage/files" "$root/config/opencode"; then
+      mv -- "$root/state/opencode-config.previous" "$root/config/opencode"
+      fail 'could not install OpenCode configuration'
+    fi
+    mv -f -- "$stage/record" "$root/state/opencode-config"
+    printf '%s\n' "$revision"
+    ;;
   config-get|config-stage|config-install)
     owned
     for path in "$root/config/opencode" "$root/config/opencode/opencode.json" "$root/state/tmp"; do

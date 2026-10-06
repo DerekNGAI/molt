@@ -9,7 +9,7 @@ mkdir -p "$TMP/home" "$TMP/bin" "$TMP/repos/app"
 export HOME="$TMP/home" ZDOTDIR="$TMP/home" MOLT_HOME="$TMP/home/.molt" TERM=xterm-256color
 export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/opencode"
 for tool in mutagen opencode; do
-  printf '#!/usr/bin/env bash\ncase "$*" in version) printf "0.18.1\\n" ;; --version) printf "1.18.33\\n" ;; esac\n' >"$TMP/bin/$tool"
+  printf '#!/usr/bin/env bash\ncase "$*" in version) printf "0.18.1\\n" ;; --version) printf "1.18.34\\n" ;; esac\n' >"$TMP/bin/$tool"
 done
 cat >"$TMP/bin/ssh" <<'SSH'
 #!/usr/bin/env bash

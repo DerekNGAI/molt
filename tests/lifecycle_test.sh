@@ -50,8 +50,12 @@ esac
 TOOL
 cat >"$TMP/bin/opencode" <<'TOOL'
 #!/usr/bin/env bash
-if [[ "$*" == --version ]]; then printf '1.18.33\n';
+if [[ "$*" == --version ]]; then printf '1.18.34\n';
 elif [[ "$*" == --hold ]]; then sleep 60 & wait;
+elif [[ "${!#}" == --diagnostic-state ]]; then
+  [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" ]] || exit 3
+  [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/account.json" ]] || exit 4
+  grep -Fq '"openai/gpt-6.1-sol":"xhigh"' "${XDG_STATE_HOME:-$HOME/.local/state}/opencode/model.json" || exit 5
 else
   [[ -z "${TEST_CLIENT_ARGS:-}" ]] || printf '%s\n' "$@" >"$TEST_CLIENT_ARGS"
   env
@@ -97,9 +101,24 @@ test_contained_install() (
   contains 'keep password' "$MOLT_HOME/opencode.password"
   contains '# keep config' "$MOLT_HOME/config"
   /bin/zsh -f -c 'source "$MOLT_HOME/activate.zsh"; before="$PATH"; source "$MOLT_HOME/activate.zsh"; [[ "$before" == "$PATH" ]]' || fail 'activation is not idempotent'
+  local native="$TMP/native client"
+  export XDG_DATA_HOME="$native/data" XDG_CONFIG_HOME="$native/config" XDG_STATE_HOME="$native/state" XDG_CACHE_HOME="$native/cache" TMPDIR="$native/tmp"
+  mkdir -p "$XDG_DATA_HOME/opencode" "$XDG_STATE_HOME/opencode" "$XDG_CONFIG_HOME/opencode" "$XDG_CACHE_HOME" "$TMPDIR"
+  printf '{"test-provider":{"type":"api","key":"fixture"}}\n' >"$XDG_DATA_HOME/opencode/auth.json"
+  printf '{"accounts":[],"active":null}\n' >"$XDG_DATA_HOME/opencode/account.json"
+  printf '{"variant":{"openai/gpt-6.1-sol":"xhigh"}}\n' >"$XDG_STATE_HOME/opencode/model.json"
   "$MOLT_HOME/bin/molt" client --diagnostic >"$TMP/client.env"
-  contains "XDG_DATA_HOME=$MOLT_HOME/state/data" "$TMP/client.env"
-  contains "TMPDIR=$MOLT_HOME/state/tmp" "$TMP/client.env"
+  contains "HOME=$HOME" "$TMP/client.env"
+  contains "XDG_DATA_HOME=$XDG_DATA_HOME" "$TMP/client.env"
+  contains "XDG_STATE_HOME=$XDG_STATE_HOME" "$TMP/client.env"
+  contains "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" "$TMP/client.env"
+  contains "XDG_CACHE_HOME=$XDG_CACHE_HOME" "$TMP/client.env"
+  contains "TMPDIR=$TMPDIR" "$TMP/client.env"
+  if grep -Fq 'OPENCODE_DISABLE_PROJECT_CONFIG=1' "$TMP/client.env"; then fail 'local project configuration was disabled'; fi
+  "$MOLT_HOME/bin/molt" client --diagnostic-state || fail 'Mac client lost its accounts or saved xhigh preference'
+  MOLT_LOCAL=1 "$MOLT_HOME/shims/opencode" --diagnostic-state || fail 'MOLT_LOCAL lost normal OpenCode state'
+  (cd "$TMP" && "$MOLT_HOME/shims/opencode" --diagnostic-state) || fail 'unregistered project lost normal OpenCode state'
+  "$MOLT_HOME/bin/molt" client attach http://fixture --diagnostic-state || fail 'attached client lost normal OpenCode preferences'
   mkdir -p "$MOLT_HOME/state/home/.mutagen/daemon"
   export FAIL_STOP=1
   "$MOLT_HOME/bin/molt-uninstall" --yes || fail 'removal failed for an already-stopped daemon'
@@ -107,6 +126,8 @@ test_contained_install() (
   absent "$HOME/ssh.log"
   cmp -s "$TMP/original.zshrc" "$ZDOTDIR/.zshrc" || fail 'uninstallation changed .zshrc'
   [[ -x "$MOLT_MUTAGEN_BINARY" && -x "$MOLT_OPENCODE_BINARY" ]] || fail 'removed external dependency'
+  [[ -f "$XDG_DATA_HOME/opencode/auth.json" && -f "$XDG_DATA_HOME/opencode/account.json" ]] || fail 'uninstall removed normal accounts'
+  contains '"openai/gpt-6.1-sol":"xhigh"' "$XDG_STATE_HOME/opencode/model.json"
   /bin/bash "$ROOT/uninstall.sh" --yes
 )
 
@@ -308,6 +329,7 @@ test_remote_lifecycle() (
 [[ -z "${TEST_EVENTS:-}" ]] || printf 'ssh %s\n' "$*" >>"$TEST_EVENTS"
 for arg in "$@"; do [[ "$arg" != -O ]] || exit 0; done
 last="${!#}"
+if [[ "${FAIL_CONFIG_UPLOAD:-0}" == 1 && "$last" == 'cat > '*'/config.tar.gz' ]]; then exit 1; fi
 if [[ -n "${TEST_CLIENT_PID:-}" && "$last" == 'bash -s -- cleanup '* ]] && kill -0 "$TEST_CLIENT_PID" 2>/dev/null; then
   printf 'cleanup started before stopping the client\n' >&2; exit 1
 fi
@@ -324,7 +346,8 @@ case "$1 ${2:-}" in
   'volume ls'*) ;;
   'inspect '*|'image inspect')
     if [[ "${FAIL_OWNER:-0}" == 1 ]]; then printf 'other-installation\n';
-    elif [[ "$*" == *io.molt.runtime* ]]; then [[ ! -f "$TEST_DOCKER/container" ]] || printf 'opencode-1\n';
+    elif [[ "$*" == *io.molt.runtime* ]]; then [[ ! -f "$TEST_DOCKER/container" ]] || printf 'opencode-3\n';
+    elif [[ "$*" == *io.molt.config* ]]; then [[ ! -f "$TEST_DOCKER/config-version" ]] || cat "$TEST_DOCKER/config-version";
     elif [[ "$*" == *State.Running* ]]; then [[ ! -f "$TEST_DOCKER/container" ]] || printf 'true\n';
     elif [[ "$*" == *io.molt.project* ]]; then last="${!#}"; last="${last%:latest}"; printf '%s\n' "${last##*-}";
     else printf '%s\n' "$MOLT_INSTALL_ID"; fi ;;
@@ -335,6 +358,7 @@ case "$1 ${2:-}" in
     shift
     while [[ $# -gt 0 ]]; do
       if [[ "$1" == --name ]]; then printf '%s\n' "$2" >"$TEST_DOCKER/container"; fi
+      if [[ "$1" == --label && "$2" == io.molt.config=* ]]; then printf '%s\n' "${2#io.molt.config=}" >"$TEST_DOCKER/config-version"; fi
       if [[ "$1" == --mount && "$2" == type=bind,src=*,dst=/cleanup ]]; then
         path="${2#type=bind,src=}"; path="${path%,dst=/cleanup}"
         [[ "${FAIL_HELPER:-0}" == 0 && "$path" != "${FAIL_HELPER_PATH:-}" ]] || { printf 'Docker cleanup helper failed\n' >&2; exit 1; }
@@ -361,6 +385,15 @@ source "$TEST_ROOT/bin/_molt.sh"
 [[ "${1:-}" != -- ]] || shift
 molt_canonical "$1"
 REALPATH
+  cat >"$TMP/remote-bin/sha256sum" <<'SHA256SUM'
+#!/usr/bin/env bash
+exec /usr/bin/shasum -a 256 "$@"
+SHA256SUM
+  cat >"$TMP/remote-bin/flock" <<'FLOCK'
+#!/usr/bin/env bash
+# Linux integration uses the real flock; these tool doubles run sequentially.
+exit 0
+FLOCK
   cat >"$TMP/remote-bin/rmdir" <<'RMDIR'
 #!/usr/bin/env bash
 [[ "${FAIL_ROOT_RMDIR:-0}" != 1 || "${!#}" != "$TEST_REMOTE_HOME/molt" ]] || { printf 'injected root directory removal failure\n' >&2; exit 1; }
@@ -424,7 +457,7 @@ RMDIR
       [[ "$rc" == 1 && -z "$actual" ]] || fail "accepted unsupported architecture: TARGETARCH=$target uname=$machine"
       contains 'unsupported container architecture: riscv64' "$TMP/architecture.err"
     else
-      [[ "$rc" == 99 && "$actual" == "https://github.com/anomalyco/opencode/releases/download/v1.18.33/$expected" ]] || fail "wrong OpenCode asset: TARGETARCH=$target uname=$machine exit=$rc URL=$actual"
+      [[ "$rc" == 99 && "$actual" == "https://github.com/anomalyco/opencode/releases/download/v1.18.34/$expected" ]] || fail "wrong OpenCode asset: TARGETARCH=$target uname=$machine exit=$rc URL=$actual"
     fi
   done <<'CASES'
 unset aarch64 opencode-linux-arm64.tar.gz
@@ -443,6 +476,50 @@ CASES
   printf 'invalid JSON\n' >"$TMP/server-invalid.json"
   if "$MOLT_HOME/bin/molt" server-config "@$id" set "$TMP/server-invalid.json"; then fail 'accepted invalid server configuration'; fi
   cmp -s "$TMP/server.json" "$TEST_REMOTE_HOME/molt/config/opencode/opencode.json" || fail 'invalid server configuration replaced the working file'
+  # Local configuration is authoritative; dependencies stay specific to the VM.
+  export OPENCODE_CONFIG_DIR="$TMP/mac opencode"
+  local config="$TEST_REMOTE_HOME/molt/config/opencode" runs config_record leftover
+  mkdir -p "$OPENCODE_CONFIG_DIR/commands" "$OPENCODE_CONFIG_DIR/node_modules" "$config/node_modules"
+  printf '{\n  // Local JSONC settings\n  "model": "provider/local-model",\n}\n' >"$OPENCODE_CONFIG_DIR/opencode.json"
+  printf 'Local instructions\n' >"$OPENCODE_CONFIG_DIR/AGENTS.md"
+  printf 'Custom command\n' >"$OPENCODE_CONFIG_DIR/commands/check.md"
+  printf 'Mac dependency\n' >"$OPENCODE_CONFIG_DIR/node_modules/mac-only"
+  printf 'Mac lockfile\n' >"$OPENCODE_CONFIG_DIR/package-lock.json"
+  printf 'VM dependency\n' >"$config/node_modules/vm-only"
+  (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" --continue >/dev/null)
+  cmp -s "$OPENCODE_CONFIG_DIR/opencode.json" "$config/opencode.json" || fail 'local JSONC configuration did not synchronize'
+  cmp -s "$OPENCODE_CONFIG_DIR/AGENTS.md" "$config/AGENTS.md" || fail 'global instructions did not synchronize'
+  cmp -s "$OPENCODE_CONFIG_DIR/commands/check.md" "$config/commands/check.md" || fail 'custom commands did not synchronize'
+  absent "$config/node_modules/mac-only"
+  absent "$config/package-lock.json"
+  contains 'VM dependency' "$config/node_modules/vm-only"
+  contains 'https://nodejs.org/dist/v24.21.0/' "$TEST_REMOTE_HOME/molt/meta/$id/Dockerfile"
+  runs="$(grep -c '^docker run .*--name' "$TEST_EVENTS")"
+  config_record="$(<"$TEST_REMOTE_HOME/molt/state/opencode-config")"
+  (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" --continue >/dev/null)
+  [[ "$(grep -c '^docker run .*--name' "$TEST_EVENTS")" == "$runs" ]] || fail "unchanged configuration restarted the server: $config_record -> $(<"$TEST_REMOTE_HOME/molt/state/opencode-config")"
+  rm "$OPENCODE_CONFIG_DIR/commands/check.md"
+  printf 'Updated instructions\n' >"$OPENCODE_CONFIG_DIR/AGENTS.md"
+  (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" --continue >/dev/null)
+  absent "$config/commands/check.md"
+  contains 'Updated instructions' "$config/AGENTS.md"
+  [[ "$(grep -c '^docker run .*--name' "$TEST_EVENTS")" == "$((runs + 1))" ]] || fail 'configuration changes did not reload the server'
+  runs="$((runs + 1))"
+  printf '{"model":"provider/vm-edit"}\n' >"$config/opencode.json"
+  (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" --continue >/dev/null)
+  cmp -s "$OPENCODE_CONFIG_DIR/opencode.json" "$config/opencode.json" || fail 'VM edits overrode the local configuration'
+  [[ "$(grep -c '^docker run .*--name' "$TEST_EVENTS")" == "$((runs + 1))" ]] || fail 'restoring local configuration did not reload the server'
+  cp "$OPENCODE_CONFIG_DIR/opencode.json" "$TMP/local-valid.json"
+  printf 'invalid JSONC\n' >"$OPENCODE_CONFIG_DIR/opencode.json"
+  if (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" >/dev/null); then fail 'accepted invalid local configuration'; fi
+  cmp -s "$TMP/local-valid.json" "$config/opencode.json" || fail 'invalid local configuration replaced the working settings'
+  cp "$TMP/local-valid.json" "$OPENCODE_CONFIG_DIR/opencode.json"
+  export FAIL_CONFIG_UPLOAD=1
+  if (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" >/dev/null); then fail 'attached after a failed configuration upload'; fi
+  cmp -s "$TMP/local-valid.json" "$config/opencode.json" || fail 'failed upload replaced the working settings'
+  export FAIL_CONFIG_UPLOAD=0
+  for leftover in "$MOLT_HOME/state/tmp"/config.*; do absent "$leftover"; done
+  unset OPENCODE_CONFIG_DIR
   absent "$TEST_REMOTE_HOME/molt/meta/$id/env/devenv.nix"
   export TEST_SYNC_CONFLICTS=1
   if MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset "@$id"; then fail 'deleted unsynchronized conflicting edits'; fi
