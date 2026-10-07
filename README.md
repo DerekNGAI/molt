@@ -61,9 +61,20 @@ opencode models
 opencode run 'Explain this project'
 ```
 
-These run inside its container. Provider credentials and session history are kept
-in that project's owned VM cache. Before starting or attaching, MOLT copies your
-local global OpenCode configuration to the shared VM configuration directory.
+These run inside its container. Provider credentials are shared by all repository
+containers using the same MOLT workspace root on the VM. Run `opencode auth login`
+once per provider from any registered repository; `opencode auth logout` affects
+every repository using that shared login. Credentials live in `auth/auth.json`
+under the owned VM root and survive removing or resetting an individual project.
+Complete uninstallation removes them.
+
+Session history and other application data remain in each project's VM cache.
+After changing credentials, reconnect to OpenCode so MOLT reloads any server with
+cached provider settings. Mac provider credentials and shell API-key environment
+variables are not copied to the VM.
+
+Before starting or attaching, MOLT copies your local global OpenCode configuration
+to the shared VM configuration directory.
 Settings, `AGENTS.md`, custom agents, commands, skills, tools, and plugins are
 included. `OPENCODE_CONFIG_DIR` takes precedence over
 `${XDG_CONFIG_HOME:-~/.config}/opencode` when choosing the local directory.
@@ -201,7 +212,11 @@ installation. Complete removal is the default.
 Run the installer with your existing `MOLT_HOME`. It preserves configuration,
 credentials, and ownership records. Existing contained projects rebuild into the
 plain Ubuntu OpenCode container on their next launch while retaining their mirror
-and session history. See [MIGRATION.md](MIGRATION.md) for details and older layouts.
+and session history. Projects switch to the shared VM credential store on their
+next launch. Authenticate once from any registered repository to populate it;
+previous per-project credential files remain in their caches for recovery until
+those projects are reset or removed. See [MIGRATION.md](MIGRATION.md) for details
+and older layouts.
 
 ## Development
 

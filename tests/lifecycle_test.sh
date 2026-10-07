@@ -346,8 +346,9 @@ case "$1 ${2:-}" in
   'volume ls'*) ;;
   'inspect '*|'image inspect')
     if [[ "${FAIL_OWNER:-0}" == 1 ]]; then printf 'other-installation\n';
-    elif [[ "$*" == *io.molt.runtime* ]]; then [[ ! -f "$TEST_DOCKER/container" ]] || printf 'opencode-3\n';
+    elif [[ "$*" == *io.molt.runtime* ]]; then [[ ! -f "$TEST_DOCKER/runtime-version" ]] || cat "$TEST_DOCKER/runtime-version";
     elif [[ "$*" == *io.molt.config* ]]; then [[ ! -f "$TEST_DOCKER/config-version" ]] || cat "$TEST_DOCKER/config-version";
+    elif [[ "$*" == *io.molt.auth* ]]; then [[ ! -f "$TEST_DOCKER/auth-version" ]] || cat "$TEST_DOCKER/auth-version";
     elif [[ "$*" == *State.Running* ]]; then [[ ! -f "$TEST_DOCKER/container" ]] || printf 'true\n';
     elif [[ "$*" == *io.molt.project* ]]; then last="${!#}"; last="${last%:latest}"; printf '%s\n' "${last##*-}";
     else printf '%s\n' "$MOLT_INSTALL_ID"; fi ;;
@@ -358,7 +359,9 @@ case "$1 ${2:-}" in
     shift
     while [[ $# -gt 0 ]]; do
       if [[ "$1" == --name ]]; then printf '%s\n' "$2" >"$TEST_DOCKER/container"; fi
+      if [[ "$1" == --label && "$2" == io.molt.runtime=* ]]; then printf '%s\n' "${2#io.molt.runtime=}" >"$TEST_DOCKER/runtime-version"; fi
       if [[ "$1" == --label && "$2" == io.molt.config=* ]]; then printf '%s\n' "${2#io.molt.config=}" >"$TEST_DOCKER/config-version"; fi
+      if [[ "$1" == --label && "$2" == io.molt.auth=* ]]; then printf '%s\n' "${2#io.molt.auth=}" >"$TEST_DOCKER/auth-version"; fi
       if [[ "$1" == --mount && "$2" == type=bind,src=*,dst=/cleanup ]]; then
         path="${2#type=bind,src=}"; path="${path%,dst=/cleanup}"
         [[ "${FAIL_HELPER:-0}" == 0 && "$path" != "${FAIL_HELPER_PATH:-}" ]] || { printf 'Docker cleanup helper failed\n' >&2; exit 1; }
@@ -410,7 +413,22 @@ RMDIR
   git -C "$TMP/remote-repo" init -q
   printf '{"name":"test"}\n' >"$TMP/remote-repo/package.json"
   "$MOLT_HOME/bin/molt" start "$TMP/remote-repo"
+  local shared_auth="$TEST_REMOTE_HOME/molt/auth/auth.json" auth_runs
+  [[ -f "$shared_auth" ]] || fail 'VM provider credential store was not created'
+  [[ "$(stat -f %Lp "$shared_auth")" == 600 ]] || fail 'shared credentials are not private'
+  contains "type=bind,src=$shared_auth,dst=/molt-cache/data/opencode/auth.json" "$TEST_EVENTS"
+  printf '{"openai":{"type":"api","key":"vm-fixture"}}\n' >"$shared_auth"
+  auth_runs="$(grep -c '^docker run .*--name' "$TEST_EVENTS")"
   (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" --continue >/dev/null)
+  [[ "$(grep -c '^docker run .*--name' "$TEST_EVENTS")" == "$((auth_runs + 1))" ]] || fail 'credential changes did not reload the server on reconnect'
+  contains 'vm-fixture' "$shared_auth"
+  auth_runs="$((auth_runs + 1))"
+  (cd "$TMP/remote-repo" && "$MOLT_HOME/shims/opencode" --continue >/dev/null)
+  [[ "$(grep -c '^docker run .*--name' "$TEST_EVENTS")" == "$auth_runs" ]] || fail 'unchanged credentials restarted the server'
+  MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset "$TMP/remote-repo"
+  contains 'vm-fixture' "$shared_auth"
+  "$MOLT_HOME/bin/molt" start "$TMP/remote-repo"
+  contains 'vm-fixture' "$shared_auth"
   contains '--mode two-way-safe' "$TEST_EVENTS"
   if grep -Fq -- '--ignore-vcs' "$TEST_EVENTS"; then fail 'remote OpenCode lost Git metadata'; fi
   contains '--publish 127.0.0.1:' "$TEST_EVENTS"

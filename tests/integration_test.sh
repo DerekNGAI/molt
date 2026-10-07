@@ -85,6 +85,34 @@ done
 [[ "$healthy" == 1 ]] || fail 'OpenCode server did not become healthy'
 container="$(cat "$MOLT_HOME/projects/$id/container")"
 [[ "$("$DOCKER" exec "$name" docker exec "$container" /opt/opencode/opencode --version)" == 1.18.34 ]] || fail 'VM version differs from the Mac client'
+# Provider login/logout is shared; databases and session files stay per repo.
+mkdir -p "$TMP/second-repo"
+git -C "$TMP/second-repo" init -q
+"$MOLT_HOME/bin/molt" start "$TMP/second-repo"
+second_id="$("$MOLT_HOME/bin/molt" project-id "$TMP/second-repo")"
+second_container="$(cat "$MOLT_HOME/projects/$second_id/container")"
+"$DOCKER" exec "$name" docker exec "$second_container" sh -c 'curl -fsS --user "opencode:$(cat /molt-meta/opencode.password)" http://127.0.0.1:4096/provider >/dev/null'
+"$DOCKER" exec "$name" docker exec "$container" sh -c 'curl -fsS --user "opencode:$(cat /molt-meta/opencode.password)" -X PUT -H "Content-Type: application/json" --data '\''{"type":"api","key":"molt-shared-fixture"}'\'' http://127.0.0.1:4096/auth/openai >/dev/null'
+"$MOLT_HOME/bin/molt" remote-oc "@$second_id" auth list >"$TMP/shared-auth.log"
+grep -qi openai "$TMP/shared-auth.log" || fail 'provider login was not shared with the second repo'
+"$DOCKER" exec "$name" docker exec "$second_container" sh -c 'curl -fsS --user "opencode:$(cat /molt-meta/opencode.password)" http://127.0.0.1:4096/provider' >"$TMP/shared-provider.json"
+/usr/bin/python3 -c 'import json, sys; assert "openai" in json.load(open(sys.argv[1]))["connected"]' "$TMP/shared-provider.json" || fail 'second server retained its unauthenticated provider cache'
+"$DOCKER" exec "$name" docker exec "$container" sh -c 'printf "repo-specific session\n" > /molt-cache/data/opencode/session-fixture'
+"$DOCKER" exec "$name" docker exec "$second_container" sh -c 'test ! -e /molt-cache/data/opencode/session-fixture' || fail 'session data was shared between repos'
+"$MOLT_HOME/bin/molt" stop "$TMP/second-repo"
+"$MOLT_HOME/bin/molt" start "$TMP/second-repo"
+"$MOLT_HOME/bin/molt" remote-oc "@$second_id" auth list >"$TMP/restarted-auth.log"
+grep -qi openai "$TMP/restarted-auth.log" || fail 'shared login did not survive restart'
+MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset "$TMP/second-repo"
+"$MOLT_HOME/bin/molt" remote-oc "@$id" auth list >"$TMP/reset-auth.log"
+grep -qi openai "$TMP/reset-auth.log" || fail 'removing a repo deleted shared credentials'
+"$DOCKER" exec "$name" docker exec "$container" sh -c 'curl -fsS --user "opencode:$(cat /molt-meta/opencode.password)" -X DELETE http://127.0.0.1:4096/auth/openai >/dev/null'
+"$MOLT_HOME/bin/molt" start "$TMP/second-repo"
+"$MOLT_HOME/bin/molt" remote-oc "@$second_id" auth list >"$TMP/logged-out-auth.log"
+grep -Fq '0 credentials' "$TMP/logged-out-auth.log" || fail 'provider logout was not shared'
+MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset "$TMP/second-repo"
+# Reconnect after logout before measuring reuse with unchanged settings.
+"$MOLT_HOME/bin/molt" remote-oc "@$id" auth list
 if [[ "$("$DOCKER" exec "$name" cat /home/molt-test/molt/config/opencode/opencode.json)" != "$(cat "$OPENCODE_CONFIG_DIR/opencode.json")" ]]; then
   "$DOCKER" exec "$name" cat /home/molt-test/molt/config/opencode/opencode.json
   fail 'global JSONC configuration did not synchronize'
@@ -120,7 +148,7 @@ grep -Eiq 'not.?found|session.*exist' "$TMP/attach.log" || { cat "$TMP/attach.lo
 [[ ! -e "$HOME/.mutagen" ]] || fail 'Mutagen created global state on the Mac'
 grep -Fq '"openai/gpt-6.1-sol":"xhigh"' "$XDG_STATE_HOME/opencode/model.json" || fail 'attached client lost the saved xhigh preference'
 "$DOCKER" exec "$name" sh -c "mkdir -p /home/molt-test/molt/meta/$id/env/.devenv/protected && touch /home/molt-test/molt/meta/$id/env/.devenv/protected/file && chmod 700 /home/molt-test/molt/meta/$id/env/.devenv/protected"
-"$DOCKER" exec "$name" sh -c 'mkdir -p /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin && touch /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin/plugin.d.ts && chmod 700 /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin'
+"$DOCKER" exec "$name" sh -c 'mkdir -p /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin && touch /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin/plugin.d.ts && chown -R 0:0 /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin && chmod 700 /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin'
 "$MOLT_HOME/bin/molt" stop "$TMP/repo"
 "$MOLT_HOME/bin/molt-uninstall" --yes >"$TMP/uninstall.log" 2>&1 || { cat "$TMP/uninstall.log"; fail 'uninstall failed'; }
 grep -Fq 'using Docker to remove protected files' "$TMP/uninstall.log" || fail 'uninstall did not recover root-owned files'

@@ -25,10 +25,10 @@ claim() {
     printf '%s\n' "$owner" >"$root/.install-manifest"
     fresh=1
   fi
-  for directory in projects meta config config/opencode cache state state/home state/home/.mutagen state/tmp; do
+  for directory in projects meta config config/opencode auth cache state state/home state/home/.mutagen state/tmp; do
     [[ "$(realpath -m -- "$root/$directory")" == "$root/$directory" ]] || fail "symlinked remote directory: $directory"
   done
-  mkdir -p -- "$root/"{projects,meta,config/opencode,cache,state/home,state/tmp}
+  mkdir -p -- "$root/"{projects,meta,config/opencode,auth,cache,state/home,state/tmp}
   if [[ "$fresh" == 1 ]]; then printf '0\n' >"$root/state/docker-resources"; fi
 }
 
@@ -115,10 +115,19 @@ case "$action" in
     id="$1"
     [[ "$id" =~ ^[a-f0-9]{12}$ ]] || fail 'invalid project identity'
     printf '1\n' >"$root/state/docker-resources"
-    for directory in "projects/$id" "meta/$id" "cache/$id" "cache/$id/home" "cache/$id/data" "cache/$id/cache" "cache/$id/state" "cache/$id/tmp"; do
+    for directory in auth "projects/$id" "meta/$id" "cache/$id" "cache/$id/home" "cache/$id/data" "cache/$id/data/opencode" "cache/$id/cache" "cache/$id/state" "cache/$id/tmp"; do
       [[ "$(realpath -m -- "$root/$directory")" == "$root/$directory" ]] || fail "symlinked remote project directory: $directory"
       mkdir -p -- "$root/$directory"
     done
+    for path in "$root/auth/auth.json" "$root/state/auth.lock" "$root/cache/$id/data/opencode/auth.json"; do
+      [[ ! -L "$path" && "$(realpath -m -- "$path")" == "$path" ]] || fail 'redirected provider credential storage'
+    done
+    (
+      flock -x 9
+      if [[ ! -e "$root/auth/auth.json" ]]; then printf '{}\n' >"$root/auth/auth.json"; fi
+      [[ -f "$root/auth/auth.json" ]] || fail 'provider credentials must be a regular file'
+      chmod 600 "$root/auth/auth.json"
+    ) 9>"$root/state/auth.lock"
     ;;
   config-sync-version|config-sync-stage|config-sync-install)
     owned

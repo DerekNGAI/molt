@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Docker resources remain tagged and contained under the installation's VM root.
-MOLT_RUNTIME_VERSION=opencode-3
+MOLT_RUNTIME_VERSION=opencode-4
 
 dockerfile_for_project() {
   cat >"$1" <<'DOCKERFILE'
@@ -18,7 +18,9 @@ DOCKERFILE
 }
 
 ensure_container() {
-  local running version owner image_id expected_id config_version
+  local running version owner image_id expected_id config_version auth_version expected_auth_version
+  expected_auth_version="$(remote_run "sha256sum $(quote_remote "$PROJECT_REMOTE_HOME/auth/auth.json") | cut -d ' ' -f1")"
+  [[ "$expected_auth_version" =~ ^[a-f0-9]{64}$ ]] || die 'could not read VM provider credentials'
   running="$(remote_run "docker inspect -f '{{.State.Running}}' $(quote_remote "$PROJECT_CONTAINER") 2>/dev/null || true")"
   if [[ -n "$running" ]]; then
     owner="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.installation\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
@@ -27,7 +29,8 @@ ensure_container() {
     image_id="$(remote_run "docker inspect -f '{{.Image}}' $(quote_remote "$PROJECT_CONTAINER")")"
     expected_id="$(remote_run "docker image inspect -f '{{.Id}}' $(quote_remote "$PROJECT_IMAGE")")"
     config_version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.config\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
-    if [[ "$version" == "$MOLT_RUNTIME_VERSION" && "$image_id" == "$expected_id" && "$config_version" == "$OPENCODE_CONFIG_VERSION" ]]; then
+    auth_version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.auth\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
+    if [[ "$version" == "$MOLT_RUNTIME_VERSION" && "$image_id" == "$expected_id" && "$config_version" == "$OPENCODE_CONFIG_VERSION" && "$auth_version" == "$expected_auth_version" ]]; then
       [[ "$running" == true ]] || remote_run "docker start $(quote_remote "$PROJECT_CONTAINER") >/dev/null"
       return 0
     fi
@@ -36,12 +39,13 @@ ensure_container() {
     remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER")"
   fi
   remote_run "docker run -d --init --restart unless-stopped --name $(quote_remote "$PROJECT_CONTAINER") \
-    --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.config=$OPENCODE_CONFIG_VERSION \
+    --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.config=$OPENCODE_CONFIG_VERSION --label io.molt.auth=$expected_auth_version \
     --publish 127.0.0.1:$PROJECT_OPENCODE_PORT:4096 --workdir /workspace \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_PATH,dst=/workspace") \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_META,dst=/molt-meta,readonly") \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_HOME/config,dst=/molt-config") \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_HOME/cache/$PROJECT_ID,dst=/molt-cache") \
+    --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_HOME/auth/auth.json,dst=/molt-cache/data/opencode/auth.json") \
     --env HOME=/molt-cache/home --env XDG_CONFIG_HOME=/molt-config --env XDG_DATA_HOME=/molt-cache/data \
     --env XDG_CACHE_HOME=/molt-cache/cache --env XDG_STATE_HOME=/molt-cache/state --env TMPDIR=/molt-cache/tmp \
     --env OPENCODE_CONFIG_DIR=/molt-config/opencode --env OPENCODE_DISABLE_AUTOUPDATE=1 $(quote_remote "$PROJECT_IMAGE") >/dev/null"
