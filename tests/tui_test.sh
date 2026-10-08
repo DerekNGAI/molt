@@ -1,35 +1,43 @@
 #!/usr/bin/env bash
-# Exercise the real Gum UI in a pseudo-terminal; SSH and project tools are disposable doubles.
+# Exercise Bubble Tea in a pseudo-terminal; all installation/SSH state is disposable.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-tui.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/home" "$TMP/bin" "$TMP/repos/app"
+mkdir -p "$TMP/home" "$TMP/bin" "$TMP/repos/app" "$TMP/repos/service"
+GO_BIN="$(command -v go)"
+"$GO_BIN" -C "$ROOT/tui" build -trimpath -o "$TMP/molt-tui" .
+unset MOLT_SSH_CONFIG MOLT_USER_HOME OPENCODE_CONFIG_DIR
 export HOME="$TMP/home" ZDOTDIR="$TMP/home" MOLT_HOME="$TMP/home/.molt" TERM=xterm-256color
+export MOLT_TUI_BINARY="$TMP/molt-tui"
 export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/opencode"
 for tool in mutagen opencode; do
   printf '#!/usr/bin/env bash\ncase "$*" in version) printf "0.18.1\\n" ;; --version) printf "1.18.34\\n" ;; esac\n' >"$TMP/bin/$tool"
 done
 cat >"$TMP/bin/ssh" <<'SSH'
 #!/usr/bin/env bash
-if [[ -f "$TUI_TMP/hold-ssh" && "$*" == *'-O check'* ]]; then
+if [[ -f "$TUI_TMP/hold-ssh" && "$*" == *'SSH connection ready'* ]]; then
   printf '%s\n' "$$" >"$TUI_TMP/held.pid"
   sleep 60 & wait
 fi
 for arg in "$@"; do
   if [[ "$arg" == -G ]]; then exec /usr/bin/ssh "$@"; fi
 done
-exit 255
+if [[ "$*" == *'BatchMode=no'* ]]; then
+  printf 'Fixture SSH password: '
+  stty -echo
+  read -r password
+  stty echo
+  printf '\nFixture login accepted\n'
+fi
+exit 0
 SSH
 chmod +x "$TMP/bin/"*
-source "$ROOT/bin/_molt.sh"
-if [[ -z "${MOLT_GUM_BINARY:-}" ]]; then MOLT_GUM_BINARY="$(molt_download_tool gum "$TMP" "$ROOT/tools.lock")"; fi
-export MOLT_GUM_BINARY
-molt_gum_version "$MOLT_GUM_BINARY"
 export PATH="$TMP/bin:/usr/bin:/bin"
 /bin/bash "$ROOT/install.sh" --non-interactive >/dev/null
 git -C "$TMP/repos/app" init -q
+git -C "$TMP/repos/service" init -q
 "$MOLT_HOME/bin/molt" config set MOLT_ROOT "$TMP/repos"
 "$MOLT_HOME/bin/molt" config set MOLT_HOST unreachable-vm
 "$MOLT_HOME/bin/molt" config set MOLT_ANIMATIONS 0

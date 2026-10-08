@@ -16,8 +16,17 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 if [[ "$INTERACTIVE" == 1 || ( "$INTERACTIVE" == auto && -t 0 && -t 1 ) ]]; then
-  source "$SRC/bin/_tui.sh"
-  tui_install "$SRC"
+  [[ -t 0 && -t 1 ]] || { molt_error 'interactive installation requires a terminal'; exit 1; }
+  binary="${MOLT_TUI_BINARY:-$SRC/bin/molt-tui}"
+  if [[ ! -x "$binary" || -d "$binary" ]]; then
+    command -v go >/dev/null 2>&1 || { molt_error 'install Go 1.26 or supply MOLT_TUI_BINARY to build the control center'; exit 1; }
+    bootstrap="$(mktemp -d "${TMPDIR:-/tmp}/molt-bootstrap.XXXXXX")"
+    trap 'rm -rf -- "$bootstrap"' EXIT
+    binary="$bootstrap/molt-tui"
+    printf 'molt: building the terminal interface...\n'
+    (cd "$SRC/tui" && CGO_ENABLED=0 go build -trimpath -o "$binary" .)
+  fi
+  "$binary" --home "$MOLT_HOME" --install-source "$SRC"
   exit $?
 fi
 molt_safe_home || exit 1
@@ -108,10 +117,24 @@ STAGE="$(mktemp -d "$MOLT_HOME/releases/install.XXXXXX")"
 mkdir -p "$STAGE/bin" "$STAGE/shims" "$STAGE/tools"
 cp -R "$SRC/bin/." "$STAGE/bin/"
 cp -R "$SRC/shims/." "$STAGE/shims/"
+cp -R "$SRC/remote" "$STAGE/remote"
+if [[ -d "$SRC/tui" ]]; then cp -R "$SRC/tui" "$STAGE/tui"; fi
 cp "$SRC/uninstall.sh" "$STAGE/bin/molt-uninstall"
 cp "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/config.example" "$STAGE/"
 cp "$SRC/tools.lock" "$STAGE/tools.lock"
 chmod +x "$STAGE/bin/"* "$STAGE/shims/"*
+# Releases may bundle a prebuilt dashboard. Source installs build once with Go;
+# the installed dashboard has no Go runtime dependency.
+if [[ -n "${MOLT_TUI_BINARY:-}" ]]; then
+  [[ -x "$MOLT_TUI_BINARY" && ! -d "$MOLT_TUI_BINARY" ]] || { molt_error 'invalid dashboard executable'; exit 1; }
+  cp "$MOLT_TUI_BINARY" "$STAGE/bin/molt-tui"
+elif [[ ! -x "$STAGE/bin/molt-tui" && -d "$STAGE/tui" ]]; then
+  if command -v go >/dev/null 2>&1; then
+    printf 'molt: building the terminal dashboard...\n'
+    (cd "$STAGE/tui" && CGO_ENABLED=0 go build -trimpath -o ../bin/molt-tui .)
+  else molt_error 'install Go 1.26 or supply MOLT_TUI_BINARY; the Bubble Tea control center is required'; exit 1; fi
+fi
+[[ -x "$STAGE/bin/molt-tui" ]] || { molt_error 'missing Bubble Tea control center'; exit 1; }
 cat >"$STAGE/MOLT.command" <<'LAUNCHER'
 #!/usr/bin/env bash
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -146,12 +169,6 @@ resolve_tool() {
 }
 MUTAGEN_BINARY="$(resolve_tool mutagen "${MOLT_MUTAGEN_BINARY:-}")"
 OPENCODE_BINARY="$(resolve_tool opencode "${MOLT_OPENCODE_BINARY:-}")"
-if [[ -n "${MOLT_BOOTSTRAP_GUM_BINARY:-}" ]]; then
-  molt_gum_version "$MOLT_BOOTSTRAP_GUM_BINARY" || { molt_error 'Gum 2.0.2 is required'; exit 1; }
-  mkdir -p "$STAGE/tools/gum"
-  cp "$MOLT_BOOTSTRAP_GUM_BINARY" "$STAGE/tools/gum/gum"
-  GUM_BINARY="$MOLT_HOME/tools/gum/gum"
-else GUM_BINARY="$(resolve_tool gum "${MOLT_GUM_BINARY:-}")"; fi
 check_binary() {
   local binary="$1"
   case "$binary" in "$MOLT_HOME/tools/"*) binary="$STAGE/tools/${binary#"$MOLT_HOME/tools/"}" ;; esac
@@ -161,7 +178,6 @@ check_binary() {
   molt_error 'Mutagen 0.18.1 is required for the contained transport'; exit 1;
 }
 [[ -n "$(check_binary "$OPENCODE_BINARY" --version)" ]] || { molt_error 'invalid OpenCode client'; exit 1; }
-[[ "$(check_binary "$GUM_BINARY" --version)" == 'gum version v2.0.2 '* ]] || { molt_error 'Gum 2.0.2 is required for the control center'; exit 1; }
 
 cat >"$STAGE/manifest" <<EOF
 FORMAT=2
@@ -170,7 +186,6 @@ ROOT=$MOLT_HOME
 STATUS=ready
 MUTAGEN_BINARY=$MUTAGEN_BINARY
 OPENCODE_BINARY=$OPENCODE_BINARY
-GUM_BINARY=$GUM_BINARY
 EOF
 # Activation derives its own path, including custom paths with spaces or quotes.
 cat >"$STAGE/activate.zsh" <<'ACTIVATE'

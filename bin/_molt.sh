@@ -96,14 +96,11 @@ molt_download_tool() {
     Darwin/x86_64/mutagen) asset=mutagen_darwin_amd64_v0.18.1.tar.gz ;;
     Darwin/arm64/opencode) asset=opencode-darwin-arm64.zip ;;
     Darwin/x86_64/opencode) asset=opencode-darwin-x64-baseline.zip ;;
-    Darwin/arm64/gum) asset=gum_2.0.2_Darwin_arm64.tar.gz ;;
-    Darwin/x86_64/gum) asset=gum_2.0.2_Darwin_x86_64.tar.gz ;;
     *) molt_error 'automatic downloads support macOS arm64 and x86_64'; return 1 ;;
   esac
   case "$name" in
     mutagen) version=v0.18.1; repo=mutagen-io/mutagen ;;
     opencode) version=v1.18.34; repo=anomalyco/opencode ;;
-    gum) version=v2.0.2; repo=charmbracelet/gum ;;
   esac
   checksum="$(awk -v asset="$asset" '$2==asset {print $1}' "$lock")"
   [[ "$checksum" =~ ^[a-f0-9]{64}$ ]] || { molt_error "missing checksum for $asset"; return 1; }
@@ -114,14 +111,12 @@ molt_download_tool() {
   }
   mkdir -p "$destination/tools/$name"
   if [[ "$asset" == *.zip ]]; then unzip -q "$archive" -d "$destination/tools/$name" || return 1;
-  elif [[ "$name" == gum ]]; then tar -xzf "$archive" --strip-components=1 -C "$destination/tools/$name" || return 1;
   else tar -xzf "$archive" -C "$destination/tools/$name" || return 1; fi
   rm -f "$archive"
   [[ -x "$destination/tools/$name/$name" ]] || { molt_error "missing executable in $asset"; return 1; }
   printf '%s\n' "$destination/tools/$name/$name"
 }
 
-molt_gum_version() { [[ "$("$1" --version)" == 'gum version v2.0.2 '* ]]; }
 
 molt_mutagen() (
   local binary
@@ -200,8 +195,11 @@ molt_ssh() (
   known_hosts="${known_hosts//\\/\\\\}"; known_hosts="${known_hosts//\"/\\\"}"
   local -a options
   options=(-o ControlMaster=auto -o 'ControlPath=./c-%C' -o ControlPersist=60
-    -o "UserKnownHostsFile=\"$known_hosts\"" -o ConnectTimeout=10
+    -o "UserKnownHostsFile=\"$known_hosts\"" -o "ConnectTimeout=${MOLT_SSH_CONNECT_TIMEOUT:-10}"
     -o ServerAliveInterval=15 -o ServerAliveCountMax=2)
+  # Background TUI actions cannot borrow the outer terminal for authentication.
+  # Interactive authentication runs in the control center's embedded PTY.
+  if [[ "${MOLT_UI_BATCH:-0}" == 1 ]]; then options+=(-o BatchMode=yes -o StrictHostKeyChecking=yes); fi
   if [[ -n "${MOLT_SSH_CONFIG:-}" ]]; then options+=(-F "$MOLT_SSH_CONFIG");
   elif [[ -f "${MOLT_USER_HOME:-$HOME}/.ssh/config" ]]; then options+=(-F "${MOLT_USER_HOME:-$HOME}/.ssh/config");
   else options+=(-F /dev/null); fi

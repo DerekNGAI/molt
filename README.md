@@ -100,8 +100,8 @@ configuration so local sessions load the changes too.
   access through `sudo`.
 - Internet access for the initial tool downloads and Docker build.
 
-The installer downloads private, checksum-verified copies of Mutagen 0.18.1,
-OpenCode 1.18.34, and Gum 2.0.2 when suitable external tools are unavailable.
+The installer downloads private, checksum-verified copies of Mutagen 0.18.1
+and OpenCode 1.18.34 when suitable external tools are unavailable.
 OpenCode's server version is pinned in the image. The container includes Git,
 curl, CA certificates, and checksum-verified Node.js 24.21.0 with npm and npx for
 local MCP servers. Project toolchains and dependency installation are not
@@ -110,10 +110,63 @@ separately.
 
 ## Terminal control center
 
-Run `molt` to open the console. Use arrow keys and Enter to select actions, Escape
-to go back, and Ctrl-C to cancel an action. Logs and action results remain available
-for inspection and retry. Interactive SSH and OpenCode sessions return to the
-console when finished.
+Run `molt` to open a persistent dashboard. It shows local CPU, memory, disk, network
+rates, uptime and load alongside your VMs, MOLT-owned Docker containers, project
+synchronization and OpenCode server health. CPU history appears as sparklines.
+The selected VM's Docker panel includes per-container CPU and memory usage.
+
+Metrics refresh every three seconds, independently of keyboard input. Each VM is
+probed concurrently through authenticated SSH; no monitoring agent is installed.
+An unreachable VM shows **unknown** project health and marks the previous sample
+as stale. Saved project activation is never presented as observed container health.
+SSH probes use batch authentication and trusted host keys; press `c` to complete
+an interactive login when needed. Docker counts cover resources owned by this
+MOLT installation. Local disk usage covers the filesystem containing `MOLT_HOME`;
+VM disk usage covers the remote user's home filesystem.
+
+Transfers animate when Mutagen reports staging progress. Actions stream output
+into the lower panel and record their result in the activity feed. Log views poll
+the latest 200 server lines, keep your scroll position and resume following with
+`G`. The feed keeps 200 session events; action output is retained in
+`MOLT_HOME/state/ui/last.log`. Monitoring ends when you quit; project servers and
+existing synchronization continue independently.
+
+| Key | Action |
+| --- | --- |
+| `h` / `l`, Tab / Shift-Tab | Move panel focus |
+| `j` / `k`, arrows; `g` / `G`; Ctrl-D / Ctrl-U | Move selection or scroll |
+| `1`–`4` | Focus VM, system panels, projects, activity/output |
+| `[` / `]` | Select a VM |
+| `/`, Enter, Escape | Filter projects, apply, clear |
+| Enter | Inspect selected project |
+| `s`, `S`, `r` | Start, stop, restart selected project |
+| `o` | Attach OpenCode inside the embedded terminal pane |
+| `L`, `a`, `y` | Server logs, activity, synchronization details |
+| `c`, `d`, `n` | Connect VM, diagnostics, register a repository |
+| `:` or Ctrl-P | Open all management commands |
+| `R`, `p` | Refresh now, pause/resume polling |
+| `?`, `q` | Help, quit |
+| Ctrl-] in a session | Open session controls; confirm before ending the process |
+
+Mouse clicks select projects and focus panels; the wheel moves or scrolls.
+Stop/restart actions ask for confirmation. Escape cancels a running action after
+confirmation; quitting during an action also asks before cancelling it.
+
+The command palette opens native Bubble Tea management screens. Scanning,
+registration, connections, setup, settings, maintenance, and removal stay inside
+the control center. Forms use Tab/Shift-Tab to switch fields and Enter to continue
+or save. Escape returns to the previous screen; confirmations default to cancel.
+Scan results show repository names and relative paths; press `i` to inspect the
+selected full path. `molt menu <screen>` opens the corresponding native screen.
+
+SSH authentication, key creation, administrator prompts, provider authentication,
+and OpenCode run in an embedded terminal pane with the MOLT header and controls
+still visible. Keys, including Escape and Ctrl-C, go to the child application;
+Ctrl-] opens MOLT's session controls. Terminal size changes are forwarded to the
+child. Interactive session transcripts and password input are not saved to action
+logs. Background operations use batch SSH authentication and offer an embedded
+login when authentication is needed. The JSONC server-settings editor uses Ctrl-S
+to save and Escape to discard, with confirmation for both.
 
 | Screen | Actions |
 | --- | --- |
@@ -126,16 +179,26 @@ console when finished.
 | Maintenance | Diagnostics, VM preparation, repair, upgrade, cleanup |
 | Uninstall | Complete removal, optional Docker preparation reversal, local-only removal |
 
-The interface uses rounded headers, project status indicators, short header
-transitions, and animated loading indicators. Disable motion in **Settings →
+The dashboard adapts to terminal size: wide terminals show three system panels;
+narrow terminals combine the infrastructure overview, and very small terminals
+prioritize the project list. Rounded borders, restrained cyan accents and explicit
+focus markers remain readable with color disabled. Disable motion in **Settings →
 Animations**, or save the preference from the CLI:
 
 ```bash
 molt config set MOLT_ANIMATIONS 0
 ```
 
-This removes transitions and animated spinners. `NO_COLOR=1` also uses the static
-interface and plain Gum styles.
+This disables animated indicators while preserving live metrics and action output.
+`NO_COLOR=1` also disables color and decorative motion.
+
+Source installations build the dashboard once with **Go 1.26 or newer** when no
+prebuilt `bin/molt-tui` is present. The resulting executable needs no Go runtime.
+Go or a bundled executable is required; installation fails with an actionable
+error when neither is available. A packaged executable can be supplied with
+`MOLT_TUI_BINARY=/path/to/molt-tui ./install.sh`. Interactive installation uses the
+same Bubble Tea interface. The previous shell UI and its Gum dependency have
+been removed.
 
 ## Synchronization and connections
 
@@ -225,12 +288,19 @@ bash tests/molt_test.sh
 bash tests/lifecycle_test.sh
 bash tests/manage_test.sh
 bash tests/tui_test.sh
+bash tests/dashboard_test.sh
 bash tests/integration_test.sh
+# Dashboard tests, static checks and build:
+(cd tui && go test -race ./... && go vet ./... && CGO_ENABLED=0 go build -trimpath -o ../bin/molt-tui .)
 ```
 
-The shell tests use isolated tool doubles. The TUI tests use real Gum in an
-`expect` pseudo-terminal and check navigation, cancellation, resize, terminal
-restoration, static motion settings, and the guided installation-to-uninstallation
-flow. The opt-in integration test requires Docker and creates a disposable SSH
+The shell tests use isolated tool doubles. The dashboard Go tests cover telemetry,
+sync conflicts, safe terminal text, filtering, stable selection, compact layouts
+and cancellation prompts, native management routing, complete scan results,
+small-terminal validation, and real embedded PTY input, queries and resize.
+The TUI tests build Bubble Tea and use an `expect` pseudo-terminal with isolated
+SSH/tool doubles. They check scanning and registration, aliases, password input,
+cancellation, resize, terminal restoration, settings, and the guided installation
+through uninstallation flow. The opt-in integration test requires Docker and creates a disposable SSH
 host with its own Docker daemon; it checks real builds, synchronization in both
 directions, server health, stop/restart, and complete removal.

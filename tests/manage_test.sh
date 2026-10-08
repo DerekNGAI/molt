@@ -5,12 +5,13 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-manage.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/home" "$TMP/bin" "$TMP/dotfiles"
+unset MOLT_SSH_CONFIG MOLT_USER_HOME OPENCODE_CONFIG_DIR
 export HOME="$TMP/home" ZDOTDIR="$TMP/dotfiles" PATH="$TMP/bin:/usr/bin:/bin"
-export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/opencode" MOLT_GUM_BINARY="$TMP/bin/gum"
+export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/opencode" MOLT_TUI_BINARY="$TMP/bin/molt-tui"
 for tool in mutagen opencode; do
   printf '#!/usr/bin/env bash\ncase "$*" in version) printf "0.18.1\\n" ;; --version) printf "2.0.2\\n" ;; esac\n' >"$TMP/bin/$tool"
 done
-printf '#!/usr/bin/env bash\nprintf "gum version v2.0.2 (test)\\n"\n' >"$TMP/bin/gum"
+printf '#!/usr/bin/env bash\nprintf "native TUI fixture\\n"\n' >"$TMP/bin/molt-tui"
 chmod +x "$TMP/bin/"*
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 install() {
@@ -203,14 +204,20 @@ test_project_management() (
   [[ ! -d "$MOLT_HOME/projects/$id" ]] || fail 'could not reset a missing checkout by its saved identity'
 )
 
-test_gum_install() (
-  export MOLT_HOME="$HOME/private-gum" MOLT_BOOTSTRAP_GUM_BINARY="$MOLT_GUM_BINARY" MOLT_GUM_BINARY=''
+test_install_repair() (
+  export MOLT_HOME="$HOME/private-tui"
   /bin/bash "$ROOT/install.sh" --non-interactive >"$TMP/install.log" 2>&1
-  [[ -x "$MOLT_HOME/tools/gum/gum" ]] || fail 'bootstrap Gum was not installed privately'
-  grep -Fxq "GUM_BINARY=$MOLT_HOME/tools/gum/gum" "$MOLT_HOME/.install-manifest" || fail 'Gum manifest points to the temporary bootstrap directory'
+  [[ -x "$MOLT_HOME/bin/molt-tui" ]] || fail 'native TUI was not installed privately'
   [[ -x "$MOLT_HOME/current/install.sh" && -f "$MOLT_HOME/current/config.example" ]] || fail 'installation cannot repair itself'
   [[ -x "$MOLT_HOME/MOLT.command" ]] || fail 'missing Finder launcher'
   /bin/bash "$MOLT_HOME/current/install.sh" --non-interactive >"$TMP/repair.log" 2>&1 || { cat "$TMP/repair.log" >&2; fail 'installation could not repair itself from its owned release'; }
+)
+
+test_native_install() (
+  install native-ui
+  [[ -x "$MOLT_HOME/bin/molt-tui" ]] || fail 'native TUI was not installed'
+  [[ ! -e "$MOLT_HOME/bin/_tui.sh" ]] || fail 'legacy shell UI was installed'
+  [[ "$("$MOLT" tools)" != *GUM* ]] || fail 'tool inspection still requires Gum'
 )
 
 test_install_options() (
@@ -245,7 +252,7 @@ test_ssh_paths() (
   [[ "$output" == *"$expected"* ]] || fail 'SSH interpreted spaces/percent tokens instead of the contained known-hosts path'
 )
 
-for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_gum_install test_install_options test_action_capture test_ssh_paths}; do
+for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_install_repair test_native_install test_install_options test_action_capture test_ssh_paths}; do
   "$test"
   printf 'PASS: %s\n' "$test"
 done

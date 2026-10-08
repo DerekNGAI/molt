@@ -6,9 +6,10 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-lifecycle.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'chmod -R u+rwX "$TMP"; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/zsh"
+unset MOLT_SSH_CONFIG MOLT_USER_HOME OPENCODE_CONFIG_DIR
 export HOME="$TMP/home" ZDOTDIR="$TMP/zsh" PATH="$TMP/bin:/usr/bin:/bin"
 export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/opencode"
-export MOLT_GUM_BINARY="$TMP/bin/gum"
+export MOLT_TUI_BINARY="$TMP/bin/molt-tui"
 
 cat >"$TMP/bin/mutagen" <<'TOOL'
 #!/usr/bin/env bash
@@ -61,9 +62,9 @@ else
   env
 fi
 TOOL
-cat >"$TMP/bin/gum" <<'TOOL'
+cat >"$TMP/bin/molt-tui" <<'TOOL'
 #!/usr/bin/env bash
-printf 'gum version v2.0.2 (test)\n'
+printf 'native TUI fixture\n'
 TOOL
 cat >"$TMP/bin/ssh" <<'TOOL'
 #!/usr/bin/env bash

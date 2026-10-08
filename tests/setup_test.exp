@@ -1,119 +1,80 @@
 #!/usr/bin/expect -f
-# Fresh install -> private SSH profile -> prepared VM -> activation -> complete uninstall.
-set timeout 12
+# Fresh native installation, shell activation, VM setup, and complete uninstall.
+set timeout 25
 log_user 0
 proc see {text} {
-  global spawn_id
+  global spawn_id expect_out
   expect {
     -ex $text { return }
-    timeout { puts stderr "FAIL: setup did not show '$text'"; exit 1 }
-    eof { puts stderr "FAIL: setup exited before '$text'"; exit 1 }
+    timeout { puts stderr "FAIL: native setup did not show '$text'\n$expect_out(buffer)"; exit 1 }
+    eof { puts stderr "FAIL: native setup exited before '$text'"; exit 1 }
   }
 }
-proc menu {text} { see $text; see "submit" }
-proc enter {} { global spawn_id; send -- "\r"; after 120 }
-proc down {count} { global spawn_id; for {set i 0} {$i < $count} {incr i} {send -- "\033\[B"; after 70} }
-proc yes {} { global spawn_id; see "submit"; send -- "y"; after 120 }
-proc value {text} { global spawn_id; see "submit"; send -- "\025$text\r"; after 120 }
+proc enter {} { global spawn_id; send -- "\r"; after 180 }
+proc down {count} { global spawn_id; for {set i 0} {$i<$count} {incr i} {send -- "\033\[B"; after 80} }
+proc value {text} { global spawn_id; send -- "\025$text\r"; after 180 }
 proc escape {} { global spawn_id; send -- "\033"; after 250 }
+proc palette {index} { global spawn_id; send -- ":"; see "COMMANDS"; down $index; enter }
 spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/bash "$env(TUI_ROOT)/install.sh" --interactive
-stty rows 30 columns 100 < $spawn_out(slave,name)
-menu "Install folder"
+stty rows 32 columns 100 < $spawn_out(slave,name)
+see "INSTALL FOLDER"
 enter
-see "Install MOLT"
-yes
-see "Completed: Install MOLT"
+see "INSTALL MOLT?"
+send -- "y"
+see "MOLT INSTALLED"
 enter
-see "Reopen MOLT"
-yes
-see "Completed: Enable shell activation"
-enter
-# Installation alone must be enough to reopen MOLT, before any VM setup.
-set installed_command [exec /bin/zsh -ic {command -v molt}]
-if {$installed_command != "$env(MOLT_HOME)/bin/molt"} { puts stderr "FAIL: a fresh Zsh cannot find MOLT after installation"; exit 1 }
-menu "Welcome to MOLT"
-down 1
-enter
-menu "MOLT Control Center"
+see "GUIDED SETUP"
+set command [exec /bin/zsh -ic {command -v molt}]
+if {$command!="$env(MOLT_HOME)/bin/molt"} { puts stderr "FAIL: native installation did not enable shell activation"; exit 1 }
 escape
+see "WORKSPACES"
+send -- "q"
 expect eof
 catch wait result
-if {[lindex $result 3] != 0} { puts stderr "FAIL: closing the installer returned $result"; exit 1 }
+if {[lindex $result 3]!=0} { puts stderr "FAIL: closing the installer returned $result"; exit 1 }
 spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/zsh -ic molt
-stty rows 30 columns 100 < $spawn_out(slave,name)
-menu "Welcome to MOLT"
+stty rows 32 columns 100 < $spawn_out(slave,name)
+see "WORKSPACES"
+palette 1
+see "CONNECTIONS"
 enter
-see "Guided setup"
-menu "No connection configured"
-enter
-menu "Connections"
-# Cancelling connection setup must return to Guided setup, before folder prompts.
-escape
-see "Guided setup"
-menu "No connection configured"
-enter
-menu "Connections"
-enter
-menu "Connection name"
-escape
-menu "Connections"
-escape
-see "Guided setup"
-menu "No connection configured"
-enter
-menu "Connections"
-enter
-menu "Connection name"
+see "CONNECTION PROFILE"
+see "Connection name"
 enter
 see "VM address"
 value "vm.example"
-menu "SSH username"
+see "SSH username"
 enter
-menu "SSH port"
-enter
-menu "SSH authentication"
+see "SSH port"
 enter
 see "Identity file"
 value "$env(TUI_TMP)/login-key"
-menu "Completed"
+see "CONNECTION / MOLT-VM"
+escape
+see "CONNECTIONS"
+escape
+see "WORKSPACES"
+palette 2
+see "GUIDED SETUP"
 enter
-see "Completed: Connect to molt-vm"
-enter
-menu "Connections"
-down 3
-enter
-see "Guided setup"
-menu "Use configured connection (molt-vm)"
-enter
-see "Project folder"
+see "SETUP FOLDERS"
 value "$env(TUI_TMP)/repos"
-menu "Completed"
+see "Remote workspace"
 enter
-menu "Remote workspace"
-enter
-menu "Completed"
-enter
-see "Prepare VM"
-yes
-see "Completed: Prepare VM"
-enter
-menu "Setup complete"
+see "PREPARE VM?"
+send -- "y"
+see "SESSION / bootstrap"
+see "SETUP COMPLETE"
+if {![file exists "$env(TUI_TMP)/vm/molt/.install-manifest"]} { puts stderr "FAIL: native setup did not prepare its VM workspace"; exit 1 }
+if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_ROOT]!="$env(TUI_TMP)/repos"} { puts stderr "FAIL: project folder was not saved"; exit 1 }
+escape
+see "WORKSPACES"
+palette 9
+see "UNINSTALL"
 down 1
 enter
-menu "MOLT Control Center"
-# Inspect the persisted results through the same CLI the TUI uses.
-set root [exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_ROOT]
-if {$root != "$env(TUI_TMP)/repos"} { puts stderr "FAIL: project folder was not saved"; exit 1 }
-if {![file executable "$env(MOLT_HOME)/tools/gum/gum"]} { puts stderr "FAIL: temporary bootstrap Gum was not copied into the installation"; exit 1 }
-if {![file exists "$env(TUI_TMP)/vm/molt/.install-manifest"]} { puts stderr "FAIL: VM setup did not create its owned workspace"; exit 1 }
-if {![file exists "$env(HOME)/.zshrc"]} { puts stderr "FAIL: shell activation was not installed"; exit 1 }
-down 7
-enter
-menu "Uninstall"
-enter
-see "Remove MOLT"
-yes
-see "removed local installation"
+see "REMOVE MOLT?"
+send -- "y"
 expect eof
 catch wait result
-if {[lindex $result 3] != 0} { puts stderr "FAIL: guided lifecycle returned $result"; exit 1 }
+if {[lindex $result 3]!=0} { puts stderr "FAIL: guided lifecycle returned $result"; exit 1 }

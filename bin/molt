@@ -453,22 +453,39 @@ cmd_reset() {
   reset_loaded_project
 }
 cmd_tui() {
+  local screen=''
+  local -a options
   [[ -t 0 && -t 1 ]] || die 'the control center needs an interactive terminal'
   if [[ ! -f "$MOLT_HOME/.install-manifest" ]]; then exec /bin/bash "$SCRIPT_DIR/../install.sh" --interactive; fi
   molt_owned_home || die 'not an owned installation'
+  molt_state || die 'unsafe installation state'
+  if [[ "${1:-}" == --screen ]]; then screen="${2:?screen required}"; shift 2; fi
+  [[ $# -le 1 ]] || die 'molt tui [project-folder]'
   [[ $# == 0 ]] || cmd_config set MOLT_ROOT "$1"
-  source "$SCRIPT_DIR/_tui.sh"
-  tui_main
+  [[ -x "$SCRIPT_DIR/molt-tui" ]] || die 'Bubble Tea control center is missing; repair the installation with Go or MOLT_TUI_BINARY'
+  options=(--cli "$MOLT_HOME/bin/molt" --home "$MOLT_HOME")
+  [[ -z "$screen" ]] || options+=(--screen "$screen")
+  exec "$SCRIPT_DIR/molt-tui" "${options[@]}"
+}
+cmd_menu() {
+  [[ $# -le 1 ]] || die 'molt menu [screen]'
+  case "${1:-}" in
+    '') cmd_tui ;;
+    projects|connections|setup|opencode|settings|maintenance|uninstall) cmd_tui --screen "$1" ;;
+    *) die 'molt menu [projects|connections|setup|opencode|settings|maintenance|uninstall]' ;;
+  esac
 }
 usage() {
   cat <<'USAGE'
 molt — remote OpenCode workspaces
 
   molt                         open the local control center
+  molt menu [screen]           open setup and management forms
   molt scan [root]             list Git repositories
   molt register [repo]         register a repository on the selected VM
   molt start [repo]            sync, build, and start its OpenCode server
   molt stop [repo]             stop its server and sync
+  molt restart [repo]          stop, synchronize, and start its server
   molt up / down               start / stop registered projects
   molt oc [args]               auto-start and attach to this repo's server
   molt project-find [path]     print the closest registered project ID
@@ -479,6 +496,7 @@ molt — remote OpenCode workspaces
   molt status / doctor        show status / check prerequisites
   molt logs [repo]             show OpenCode server logs
   molt sync [repo]             show synchronization status and conflicts
+  molt monitor [host <alias>|sync]  read machine status for the dashboard
   molt reset [repo|--all]      remove owned project resources
   molt tools                  show tool versions
 
@@ -489,14 +507,16 @@ USAGE
 source "$SCRIPT_DIR/_manage.sh"
 source "$SCRIPT_DIR/_docker.sh"
 source "$SCRIPT_DIR/_opencode.sh"
+source "$SCRIPT_DIR/_monitor.sh"
 main() {
   local command="${1:-tui}" state profile ref
   shift || true
   case "$command" in
-    tui) cmd_tui "$@" ;; scan) scan_repositories "${1:-$MOLT_ROOT}" ;;
+    tui) cmd_tui "$@" ;; menu) cmd_menu "$@" ;; monitor) cmd_monitor "$@" ;; scan) scan_repositories "${1:-$MOLT_ROOT}" ;;
     project-id) project_id_for_path "${1:-.}" ;; project-find) cmd_project_find "$@" ;; project-active) project_active_for_path "${1:-.}" ;;
     setup) cmd_setup ;; bootstrap) cmd_bootstrap ;; unprepare-vm) cmd_unprepare_vm ;;
     register) cmd_register "$@" ;; start) cmd_start "$@" ;; stop) cmd_stop_project "$@" ;;
+    restart) cmd_stop_project "$@" && cmd_start "$@" ;;
     up) for state in "$MOLT_PROJECTS_HOME"/*/path; do [[ ! -f "$state" ]] || cmd_start "@$(basename "${state%/path}")"; done ;;
     down) cmd_down ;; status) cmd_status ;; doctor) cmd_doctor ;;
     config) cmd_config "$@" ;; connection) cmd_connection "$@" ;; shell) cmd_shell "$@" ;; tools) cmd_tools ;;

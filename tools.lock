@@ -1,5 +1,5 @@
 # SHA-256 hashes from Mutagen SHA256SUMS and GitHub release asset digests.
-# Mutagen v0.18.1; OpenCode v1.18.34; Gum v2.0.2; Node.js v24.21.0.
+# Mutagen v0.18.1; OpenCode v1.18.34; Node.js v24.21.0.
 # Node.js hashes are from its official SHASUMS256.txt. Update versions and hashes together.
 6f810416d9e5fc4fd5e18431146f8b3c5a2056ba5a24f76c1e66da86eb3257e2 mutagen_darwin_arm64_v0.18.1.tar.gz
 7d06f7d8fcfe90bc7e55cc834a2f2f20c2e0af9ea9bc35911fc4341ad56a9bbf mutagen_darwin_amd64_v0.18.1.tar.gz
@@ -7,7 +7,5 @@
 8e12a3da8216b55a47c2ce9b2745745bbf7e9d76efa33bc9a0959f97da686115 opencode-darwin-x64-baseline.zip
 bbdb3f00c2c51e42e315525233151309724226a8776da8e9145e3b0fa3d5310f opencode-linux-arm64.tar.gz
 24b0d458d21ef548b2752166303defcf7f4945b049fb4876ab78dfaf86d81b27 opencode-linux-x64-baseline.tar.gz
-4777a69b1170b8db23c95d5889fb32186cfda1a3ac950d339aa17e3513633890 gum_2.0.2_Darwin_arm64.tar.gz
-5374966c7c7199ea879fcaa525ddc6d447a098d3d35496e430a9a1ef38d30485 gum_2.0.2_Darwin_x86_64.tar.gz
 724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5 node-v24.21.0-linux-arm64.tar.gz
 6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff node-v24.21.0-linux-x64.tar.gz

@@ -369,11 +369,12 @@ cmd_ui_action() {
 
 cmd_tools() {
   local name binary
-  for name in MUTAGEN OPENCODE GUM; do
+  for name in MUTAGEN OPENCODE; do
     binary="$(molt_value "$MOLT_HOME/.install-manifest" "${name}_BINARY")"
     printf '%s: %s\n' "$name" "$binary"
     if [[ "$name" == MUTAGEN ]]; then molt_isolated "$binary" version; else molt_isolated "$binary" --version; fi
   done
+  printf 'TUI: Bubble Tea (%s/bin/molt-tui)\n' "$MOLT_HOME"
 }
 
 cmd_remote_oc() {

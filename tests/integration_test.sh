@@ -25,13 +25,13 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
+unset MOLT_SSH_CONFIG MOLT_USER_HOME OPENCODE_CONFIG_DIR
 export HOME="$TMP/home" MOLT_HOME="$TMP/home/.molt" PATH="/usr/bin:/bin"
 export XDG_DATA_HOME="$HOME/.local/share" XDG_STATE_HOME="$HOME/.local/state" XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache"
 mkdir -p "$HOME" "$TMP/repo"
 if [[ -n "${MOLT_INTEGRATION_TOOLS:-}" ]]; then
   export MOLT_MUTAGEN_BINARY="$MOLT_INTEGRATION_TOOLS/mutagen/mutagen"
   export MOLT_OPENCODE_BINARY="$MOLT_INTEGRATION_TOOLS/opencode/opencode"
-  [[ ! -x "$MOLT_INTEGRATION_TOOLS/gum/gum" ]] || export MOLT_GUM_BINARY="$MOLT_INTEGRATION_TOOLS/gum/gum"
 fi
 /bin/bash "$ROOT/install.sh" --non-interactive
 ssh-keygen -q -t ed25519 -N '' -f "$MOLT_HOME/state/ssh/id_ed25519"
@@ -84,6 +84,20 @@ for attempt in {1..60}; do
 done
 [[ "$healthy" == 1 ]] || fail 'OpenCode server did not become healthy'
 container="$(cat "$MOLT_HOME/projects/$id/container")"
+# Exercise real VM telemetry and Mutagen's public JSON schema.
+"$MOLT_HOME/bin/molt" monitor host molt-test >"$TMP/telemetry.txt"
+/usr/bin/python3 -c '
+import json, sys
+lines = open(sys.argv[1]).read().splitlines()
+system = next(line.split("\t")[1:] for line in lines if line.startswith("system\t"))
+assert len(system) == 11 and int(system[0]) > 0 and int(system[2]) > 0
+assert "docker\tready" in lines
+containers = [json.loads(line.split("\t", 1)[1]) for line in lines if line.startswith("container\t")]
+assert any(c["Names"] == sys.argv[2] and c["State"] == "running" for c in containers)
+assert "health\t" + sys.argv[2] + "\tready" in lines
+' "$TMP/telemetry.txt" "$container" || fail 'VM telemetry did not report live system, container and server health'
+"$MOLT_HOME/bin/molt" monitor sync >"$TMP/sync.json"
+/usr/bin/python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert any(x["name"]==sys.argv[2] and not x["paused"] for x in s)' "$TMP/sync.json" "$container" || fail 'Mutagen JSON status did not report the active project'
 [[ "$("$DOCKER" exec "$name" docker exec "$container" /opt/opencode/opencode --version)" == 1.18.34 ]] || fail 'VM version differs from the Mac client'
 # Provider login/logout is shared; databases and session files stay per repo.
 mkdir -p "$TMP/second-repo"

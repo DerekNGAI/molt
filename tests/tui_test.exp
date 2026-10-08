@@ -1,151 +1,129 @@
 #!/usr/bin/expect -f
-set timeout 10
+# Real Bubble Tea/CLI; isolated repositories, SSH and tools.
+set timeout 15
 log_user 0
 if {[info exists env(TUI_TEST_LOG)]} { log_file -a -noappend $env(TUI_TEST_LOG) }
 proc see {text} {
   global spawn_id expect_out
   expect {
     -ex $text { return }
-    timeout { puts stderr "FAIL: TUI did not show '$text'\n$expect_out(buffer)"; exit 1 }
-    eof { puts stderr "FAIL: TUI exited before '$text'"; exit 1 }
+    timeout { puts stderr "FAIL: native TUI did not show '$text'\n$expect_out(buffer)"; exit 1 }
+    eof { puts stderr "FAIL: native TUI exited before '$text'"; exit 1 }
   }
 }
-proc menu {text} { see $text; see "submit" }
-proc enter {} { global spawn_id; send -- "\r"; after 120 }
-proc down {count} { global spawn_id; for {set i 0} {$i < $count} {incr i} { send -- "\033\[B"; after 70 } }
+proc enter {} { global spawn_id; send -- "\r"; after 150 }
+proc down {count} { global spawn_id; for {set i 0} {$i<$count} {incr i} { send -- "\033\[B"; after 80 } }
 proc escape {} { global spawn_id; send -- "\033"; after 250 }
+proc palette {index} { global spawn_id; send -- ":"; see "COMMANDS"; down $index; enter }
 spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/bash "$env(MOLT_HOME)/bin/molt" tui
-stty rows 30 columns 100 < $spawn_out(slave,name)
-menu "Welcome to MOLT"
+stty rows 32 columns 100 < $spawn_out(slave,name)
+see "control center"
+see "WORKSPACES"
+# Scanning stays in Bubble Tea and registers the selected real Git checkout.
+palette 0
+see "REPOSITORIES"
+enter
+see "SCAN REPOSITORIES"
+enter
+see "SCAN RESULTS"
+see "service"
 down 1
 enter
-menu "MOLT Control Center"
-# Failed connection login keeps Guided setup at the connection step.
-down 3
+see "REGISTER REPOSITORY"
+see "COMPLETED"
 enter
-menu "Guided setup"
-enter
-see "Connect to unreachable-vm"
-see "failed"
-enter
-menu "Guided setup"
+see "REPOSITORIES"
 escape
-menu "MOLT Control Center"
-# Existing aliases are selected from a menu with resolved connection details.
-down 2
-enter
-menu "Connections"
+see "WORKSPACES"
+if {[catch {exec /bin/bash "$env(MOLT_HOME)/bin/molt" project-find "$env(TUI_TMP)/repos/service"}]} { puts stderr "FAIL: scan selection was not registered"; exit 1 }
+# Existing SSH aliases resolve using the real CLI, including included configs.
+palette 1
+see "CONNECTIONS"
 down 1
 enter
-see "Existing SSH aliases"
+see "EXISTING SSH ALIASES"
 see "ubuntu@vm.example:22"
 see "developer@alternate.example:2222"
-see "submit"
 escape
-menu "Connections"
-if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_HOST] != "unreachable-vm"} { puts stderr "FAIL: cancelled alias picker changed the connection"; exit 1 }
+see "CONNECTIONS"
 down 1
 enter
-menu "Existing SSH aliases"
+see "EXISTING SSH ALIASES"
 down 1
 enter
-menu "Completed"
-enter
-see "Connect to alternate-vm"
-see "failed"
-enter
-menu "Selected connection: alternate-vm"
-if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_HOST] != "alternate-vm"} { puts stderr "FAIL: alias picker did not save the selected connection"; exit 1 }
-# An empty configuration explains how to create a connection.
-file delete "$env(HOME)/.ssh/config"
-down 1
-enter
-menu "No SSH aliases found"
-enter
-menu "Connection name"
+see "CONNECTION / ALTERNATE-VM"
+if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_HOST] != "alternate-vm"} { puts stderr "FAIL: alias selection was not saved"; exit 1 }
 escape
-menu "Connections"
+see "CONNECTIONS"
 escape
-menu "MOLT Control Center"
-# Cancelling an in-flight command stops its SSH child and restores the menu.
-set marker [open "$env(TUI_TMP)/hold-ssh" w]
-close $marker
+see "WORKSPACES"
+# Password input goes to an embedded PTY, never to the dashboard shortcuts.
+send -- "c"
+see "SESSION / SSH"
+see "Fixture SSH password:"
+send -- "quiet-secret\r"
+see "COMPLETED"
+see "Fixture login accepted"
 enter
-see "Ctrl-C to cancel"
-for {set i 0} {$i < 40 && ![file exists "$env(TUI_TMP)/held.pid"]} {incr i} { after 100 }
-if {![file exists "$env(TUI_TMP)/held.pid"]} { puts stderr "FAIL: action never started"; exit 1 }
-send -- "\003"
-menu "Action failed"
-enter
-menu "MOLT Control Center"
-set record [open "$env(TUI_TMP)/held.pid" r]
-set held [string trim [read $record]]
-close $record
-if {![catch {exec kill -0 $held}]} { puts stderr "FAIL: cancelled action left its SSH child"; exit 1 }
-file delete "$env(TUI_TMP)/hold-ssh"
-# A normal action returns to the console, and Escape backs out of submenus.
-enter
-menu "Completed"
-enter
-menu "MOLT Control Center"
-down 5
-enter
-menu "Settings"
-enter
-menu "Project folder"
+see "WORKSPACES"
+# Cancel a hung background authentication check and its process group.
+close [open "$env(TUI_TMP)/hold-ssh" w]
+send -- "d"
+see "CHECK CONNECTION"
+for {set i 0} {$i<40 && ![file exists "$env(TUI_TMP)/held.pid"]} {incr i} { after 100 }
+if {![file exists "$env(TUI_TMP)/held.pid"]} { puts stderr "FAIL: connection check never started"; exit 1 }
 escape
-menu "Settings"
-enter
-menu "Project folder"
-send -- "\025$env(TUI_TMP)/repos\r"
-menu "Completed"
-enter
-menu "Settings"
-down 3
-enter
-menu "Completed"
-enter
-menu "Animations: On"
-if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_ANIMATIONS] != "1"} { puts stderr "FAIL: animation toggle did not save"; exit 1 }
-down 3
-enter
-menu "Completed"
-enter
-menu "Animations: Off"
-escape
-menu "MOLT Control Center"
-stty rows 24 columns 80 < $spawn_out(slave,name)
+see "WORKSPACES"
+set file [open "$env(TUI_TMP)/held.pid" r]
+set pid [string trim [read $file]]
+close $file
 after 300
-# Failed SSH does not terminate the project manager.
-down 1
+if {![catch {exec kill -0 $pid}]} { puts stderr "FAIL: cancellation left its SSH child"; exit 1 }
+file delete "$env(TUI_TMP)/hold-ssh"
+# Settings use native forms, save through the CLI, and remain usable after resize.
+palette 4
+see "SETTINGS"
 enter
-menu "M O L T   /   Projects"
-enter
-menu "M O L T   /   app"
-enter
-see "Connect to"
-see "failed"
-enter
-menu "M O L T   /   app"
+see "PROJECT FOLDER"
 escape
-menu "M O L T   /   Projects"
+see "SETTINGS"
+enter
+see "PROJECT FOLDER"
+send -- "\025$env(TUI_TMP)/repos\r"
+see "SETTINGS"
+down 4
+enter
+see "Animations: On"
+down 4
+enter
+see "Animations: Off"
+stty rows 14 columns 42 < $spawn_out(slave,name)
+after 300
 escape
-menu "MOLT Control Center"
-# Deletion requires a confirmation, and cancellation keeps the installation.
-down 7
-enter
-menu "Uninstall"
-escape
-menu "MOLT Control Center"
-down 7
-enter
-menu "Uninstall"
-enter
-see "Remove MOLT"
-see "submit"
-send -- "\033\[D"
-enter
-see "removed local installation"
+send -- "3"
+see "WORKSPACES"
+stty rows 32 columns 100 < $spawn_out(slave,name)
+after 300
+# Destructive actions require an explicit confirmation; cancel preserves state.
+send -- "q"
 expect eof
 catch wait result
-if {[lindex $result 3] != 0} { puts stderr "FAIL: TUI uninstall returned $result\n$expect_out(buffer)"; exit 1 }
+if {[lindex $result 3]!=0} { puts stderr "FAIL: dashboard terminal restoration returned $result"; exit 1 }
+# Compatibility menu entrypoints must also open Bubble Tea with old env settings.
+set env(MOLT_TUI) legacy
+spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/bash "$env(MOLT_HOME)/bin/molt" menu uninstall
+stty rows 32 columns 100 < $spawn_out(slave,name)
+see "UNINSTALL"
+down 1
+enter
+see "REMOVE MOLT?"
+send -- "n"
+see "UNINSTALL"
+if {![file exists "$env(MOLT_HOME)"]} { puts stderr "FAIL: cancelled uninstall removed state"; exit 1 }
+down 1
+enter
+see "REMOVE MOLT?"
+send -- "y"
+expect eof
+catch wait result
+if {[lindex $result 3]!=0} { puts stderr "FAIL: native uninstall/terminal restoration returned $result"; exit 1 }
