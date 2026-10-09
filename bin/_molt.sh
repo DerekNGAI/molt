@@ -178,7 +178,7 @@ molt_stop_workers() {
     case "$process" in
       *"$script "*)
         molt_kill_tree "$pid"
-        # Attached clients allow five seconds to abort their remote work.
+        # Allow local workers to finish signal handling and cleanup.
         for attempt in {1..100}; do
           kill -0 "$pid" 2>/dev/null || break
           sleep 0.1

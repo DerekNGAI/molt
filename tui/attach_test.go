@@ -59,9 +59,19 @@ func TestNativeAttachProcessHelper(t *testing.T) {
 	}
 	// Looking at another terminal's conversation must not take ownership of it.
 	request("GET", "/session/ses_other")
+	method, action, expected := "POST", "/prompt_async", http.StatusNoContent
+	switch os.Getenv("MOLT_TEST_ACTION") {
+	case "view":
+		method, action, expected = "GET", "", http.StatusOK
+	case "abort":
+		action, expected = "/abort", http.StatusOK
+	}
+	if os.Getenv("MOLT_TEST_CONFLICT") == "1" {
+		expected = http.StatusConflict
+	}
 	for _, id := range strings.Split(os.Getenv("MOLT_TEST_SESSIONS"), ",") {
-		status := request("POST", "/session/"+id+"/prompt_async?directory=%2Fworkspace%2Fsrc")
-		if status != http.StatusNoContent && !(os.Getenv("MOLT_TEST_CONFLICT") == "1" && status == http.StatusConflict) {
+		status := request(method, "/session/"+id+action+"?directory=%2Fworkspace%2Fsrc")
+		if status != expected {
 			os.Exit(4)
 		}
 	}
@@ -76,10 +86,12 @@ func TestNativeAttachProcessHelper(t *testing.T) {
 	<-signals
 }
 
-func TestAttachedTerminalsHaveIndependentLifetimes(t *testing.T) {
+func TestAttachedTerminalsDetachAndResumeRunningSessions(t *testing.T) {
 	var mu sync.Mutex
 	active := map[string]bool{}
 	aborted := map[string]int{}
+	prompted := map[string]int{}
+	viewed := map[string]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, password, ok := r.BasicAuth()
 		if !ok || user != "opencode" || password != "fixture-password" {
@@ -94,6 +106,7 @@ func TestAttachedTerminalsHaveIndependentLifetimes(t *testing.T) {
 			switch parts[2] {
 			case "prompt_async":
 				active[id] = true
+				prompted[id]++
 				w.WriteHeader(http.StatusNoContent)
 			case "abort":
 				if r.URL.Query().Get("directory") != "/workspace/src" {
@@ -105,7 +118,9 @@ func TestAttachedTerminalsHaveIndependentLifetimes(t *testing.T) {
 			default:
 				t.Errorf("unexpected mutation: %s", r.URL)
 			}
-		} else if r.Method != "GET" {
+		} else if r.Method == "GET" && len(parts) == 2 {
+			viewed[parts[1]]++
+		} else {
 			t.Errorf("history was modified or deleted: %s %s", r.Method, r.URL)
 		}
 	}))
@@ -185,8 +200,8 @@ MOLT_CLIENT_UPSTREAM="$1" MOLT_CLIENT_DIRECTORY=/workspace cmd_client attach "$1
 	}
 	first.Wait()
 	mu.Lock()
-	if active["ses_first"] || active["ses_new"] || !active["ses_other"] || aborted["ses_other"] != 0 {
-		t.Errorf("closing first terminal affected wrong sessions: active=%v aborted=%v", active, aborted)
+	if !active["ses_first"] || !active["ses_new"] || !active["ses_other"] || len(aborted) != 0 {
+		t.Errorf("closing first terminal stopped remote work: active=%v aborted=%v", active, aborted)
 	}
 	mu.Unlock()
 	workers, _ := filepath.Glob(filepath.Join(home, "state", "tmp", "client.*"))
@@ -196,19 +211,39 @@ MOLT_CLIENT_UPSTREAM="$1" MOLT_CLIENT_DIRECTORY=/workspace cmd_client attach "$1
 	second.Process.Signal(syscall.SIGTERM)
 	second.Wait()
 	mu.Lock()
-	if active["ses_other"] || aborted["ses_other"] != 1 {
-		t.Errorf("second terminal did not stop its work: active=%v aborted=%v", active, aborted)
+	if !active["ses_other"] || len(aborted) != 0 {
+		t.Errorf("terminating second terminal stopped remote work: active=%v aborted=%v", active, aborted)
 	}
 	mu.Unlock()
-	// A gracefully closed terminal releases ownership so history can be resumed.
-	resumed := start("resumed", "ses_other", "MOLT_TEST_QUIT=1")
+	// Reconnecting reads the same running session without submitting another prompt.
+	resumed := start("resumed", "ses_first", "MOLT_TEST_ACTION=view", "MOLT_TEST_QUIT=1")
 	if err := resumed.Wait(); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
+	if !active["ses_first"] || prompted["ses_first"] != 1 || viewed["ses_first"] != 1 || len(aborted) != 0 {
+		t.Errorf("reconnecting changed running work: active=%v prompted=%v viewed=%v aborted=%v", active, prompted, viewed, aborted)
+	}
+	mu.Unlock()
+	quit := start("quit", "ses_quit", "MOLT_TEST_QUIT=1")
+	if err := quit.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if !active["ses_quit"] || len(aborted) != 0 {
+		t.Errorf("normal quit stopped remote work: active=%v aborted=%v", active, aborted)
+	}
+	mu.Unlock()
+	// An explicit abort can claim sessions released by each kind of terminal exit.
+	stopped := start("stopped", "ses_first,ses_other,ses_quit", "MOLT_TEST_ACTION=abort", "MOLT_TEST_QUIT=1")
+	if err := stopped.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
 	defer mu.Unlock()
-	if active["ses_other"] || aborted["ses_other"] != 2 {
-		t.Errorf("normal quit failed to abort resumed session: active=%v aborted=%v", active, aborted)
+	if active["ses_first"] || active["ses_other"] || active["ses_quit"] || !active["ses_new"] ||
+		aborted["ses_first"] != 1 || aborted["ses_other"] != 1 || aborted["ses_quit"] != 1 || aborted["ses_new"] != 0 {
+		t.Errorf("explicit abort affected wrong sessions: active=%v aborted=%v", active, aborted)
 	}
 }
 
@@ -222,31 +257,37 @@ func TestSessionProxyRejectsUnauthorizedRequestsAndReportsAbortFailure(t *testin
 	}))
 	defer server.Close()
 	endpoint, _ := url.Parse(server.URL)
-	proxy := &sessionProxy{upstream: endpoint, proxy: httputil.NewSingleHostReverseProxy(endpoint), client: server.Client(),
-		directory: "/workspace", lockDir: t.TempDir(), username: "opencode", password: "secret", sessions: map[string]attachedSession{}}
-	request := func(id, password string) int {
-		req := httptest.NewRequest("POST", "/session/"+id+"/command", nil)
+	proxy := &sessionProxy{proxy: httputil.NewSingleHostReverseProxy(endpoint),
+		lockDir: t.TempDir(), username: "opencode", password: "secret", sessions: map[string]*os.File{}}
+	request := func(id, action, password string) int {
+		req := httptest.NewRequest("POST", "/session/"+id+"/"+action, nil)
 		req.SetBasicAuth("opencode", password)
 		response := httptest.NewRecorder()
 		proxy.ServeHTTP(response, req)
 		return response.Code
 	}
-	if status := request("ses_test", "wrong"); status != http.StatusUnauthorized {
+	if status := request("ses_test", "command", "wrong"); status != http.StatusUnauthorized {
 		t.Fatalf("unauthorized request returned %d", status)
 	}
-	if status := request("invalid", "secret"); status != http.StatusBadRequest {
+	if status := request("invalid", "command", "secret"); status != http.StatusBadRequest {
 		t.Fatalf("invalid session ID returned %d", status)
 	}
 	if requests.Load() != 0 || len(proxy.sessions) != 0 {
 		t.Fatal("rejected requests reached the backend or took session ownership")
 	}
-	if status := request("ses_test", "secret"); status != http.StatusOK {
+	if status := request("ses_test", "command", "secret"); status != http.StatusOK {
 		t.Fatalf("valid command returned %d", status)
 	}
-	if err := proxy.close(); err == nil || !strings.Contains(err.Error(), "HTTP 503") {
-		t.Fatalf("abort failure was hidden: %v", err)
+	if status := request("ses_test", "abort", "secret"); status != http.StatusServiceUnavailable {
+		t.Fatalf("explicit abort failure was hidden: HTTP %d", status)
+	}
+	if err := proxy.close(); err != nil || requests.Load() != 2 {
+		t.Fatalf("disconnect contacted the backend: requests=%d err=%v", requests.Load(), err)
 	}
 	if err := proxy.close(); err != nil || requests.Load() != 2 {
 		t.Fatalf("cleanup was not idempotent: requests=%d err=%v", requests.Load(), err)
+	}
+	if status := request("ses_test", "command", "secret"); status != http.StatusConflict || requests.Load() != 2 {
+		t.Fatalf("closed terminal forwarded a mutation: HTTP %d requests=%d", status, requests.Load())
 	}
 }

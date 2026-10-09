@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -24,19 +22,12 @@ import (
 
 var sessionIDPattern = regexp.MustCompile(`^ses_[a-zA-Z0-9]+$`)
 
-type attachedSession struct {
-	lock      *os.File
-	directory string
-}
-
 type sessionProxy struct {
-	upstream           *url.URL
 	proxy              *httputil.ReverseProxy
-	client             *http.Client
-	directory, lockDir string
+	lockDir            string
 	username, password string
 	mu                 sync.Mutex
-	sessions           map[string]attachedSession
+	sessions           map[string]*os.File
 	closed             bool
 }
 
@@ -54,14 +45,7 @@ func (p *sessionProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid session ID", http.StatusBadRequest)
 			return
 		}
-		directory := r.URL.Query().Get("directory")
-		if directory == "" {
-			directory, _ = url.PathUnescape(r.Header.Get("x-opencode-directory"))
-		}
-		if directory == "" {
-			directory = p.directory
-		}
-		if err := p.claim(id, directory); err != nil {
+		if err := p.claim(id); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
@@ -69,7 +53,7 @@ func (p *sessionProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.proxy.ServeHTTP(w, r)
 }
 
-func (p *sessionProxy) claim(id, directory string) error {
+func (p *sessionProxy) claim(id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -87,50 +71,23 @@ func (p *sessionProxy) claim(id, directory string) error {
 		lock.Close()
 		return errors.New("session is active in another terminal; open a new session")
 	}
-	p.sessions[id] = attachedSession{lock, directory}
+	p.sessions[id] = lock
 	return nil
 }
 
 func (p *sessionProxy) close() error {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed {
-		p.mu.Unlock()
 		return nil
 	}
 	p.closed = true
-	sessions := p.sessions
-	p.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	var mu sync.Mutex
 	var failures []error
-	for id, session := range sessions {
-		wg.Go(func() {
-			defer session.lock.Close()
-			endpoint := *p.upstream
-			endpoint.Path = "/session/" + id + "/abort"
-			query := endpoint.Query()
-			query.Set("directory", session.directory)
-			endpoint.RawQuery = query.Encode()
-			req, _ := http.NewRequestWithContext(ctx, "POST", endpoint.String(), nil)
-			req.SetBasicAuth(p.username, p.password)
-			resp, err := p.client.Do(req)
-			if err == nil {
-				io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-				resp.Body.Close()
-				if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
-					err = fmt.Errorf("HTTP %d", resp.StatusCode)
-				}
-			}
-			if err != nil {
-				mu.Lock()
-				failures = append(failures, fmt.Errorf("could not stop session %s: %w", id, err))
-				mu.Unlock()
-			}
-		})
+	for id, lock := range p.sessions {
+		if err := lock.Close(); err != nil {
+			failures = append(failures, fmt.Errorf("could not release session %s: %w", id, err))
+		}
 	}
-	wg.Wait()
 	return errors.Join(failures...)
 }
 
@@ -164,9 +121,8 @@ func runAttachedClient(args []string) int {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	defer transport.CloseIdleConnections()
-	p := &sessionProxy{upstream: endpoint, directory: *directory, lockDir: *lockDir, username: username,
-		password: os.Getenv("OPENCODE_SERVER_PASSWORD"), sessions: map[string]attachedSession{},
-		client: &http.Client{Transport: transport, Timeout: 5 * time.Second}}
+	p := &sessionProxy{lockDir: *lockDir, username: username,
+		password: os.Getenv("OPENCODE_SERVER_PASSWORD"), sessions: map[string]*os.File{}}
 	p.proxy = httputil.NewSingleHostReverseProxy(endpoint)
 	p.proxy.Transport = transport
 	p.proxy.FlushInterval = -1
@@ -208,7 +164,6 @@ func runAttachedClient(args []string) int {
 		}
 	}
 	server.Close()
-	// ponytail: host loss cannot run cleanup; add a server lease if that must abort work too.
 	if err := p.close(); err != nil {
 		fmt.Fprintln(os.Stderr, "molt:", err)
 		if rc == 0 {

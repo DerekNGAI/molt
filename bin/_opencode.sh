@@ -128,7 +128,7 @@ attach_loaded_project() {
   load_password
   MOLT_CLIENT_UPSTREAM="http://127.0.0.1:$PROJECT_OPENCODE_PORT" MOLT_CLIENT_DIRECTORY="$directory" \
     cmd_client attach "http://127.0.0.1:$PROJECT_OPENCODE_PORT" --dir "$directory" "$@" || rc=$?
-  # Bring the final server edits home even when the client exits with an error.
+  # Flush current edits; synchronization continues after the client disconnects.
   flush_project_sync || { log 'could not flush final changes; sync remains running'; [[ "$rc" != 0 ]] || rc=1; }
   return "$rc"
 }

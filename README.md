@@ -48,16 +48,22 @@ Open `opencode` in multiple local terminals inside the same repository to use
 independent sessions on its shared server. Connection setup is serialized; the
 clients then run concurrently through the same SSH tunnel.
 
-Quitting OpenCode or closing its terminal stops the work that terminal started,
-including work in sessions created with `/new` or selected later. Other terminals
-keep running, and conversation history remains available. A session being used
-by one terminal can be viewed elsewhere, but another terminal cannot modify it
-until its owner exits. Use a new session for independent work.
+Quitting OpenCode or closing its terminal disconnects that client. Work continues
+on the VM until it finishes, needs input, or you explicitly interrupt it in
+OpenCode. To reconnect from the same device, run `opencode` inside the repository
+and select the session with `/sessions`. Use `opencode --continue` for the latest
+session, or `opencode --session <id>` for a specific session. Conversation history
+remains available, and synchronization continues after disconnection.
 
-Cleanup requires a working connection. Sudden power loss, a hard process kill,
-or a lost network connection can leave remote work running; reconnect and abort
-it in OpenCode. Changing shared configuration or credentials can still reload
-the server and interrupt attached clients.
+A session controlled by one terminal can be viewed elsewhere, but another
+terminal cannot modify it until its owner exits. Closing the owner releases its
+local session locks so a reconnected terminal can continue or interrupt the work.
+Use a new session for independent work.
+
+VM work also continues if your computer shuts down or loses its connection.
+Stopping or restarting the project interrupts its active work. Changing shared
+configuration or credentials can still reload the server and interrupt work and
+attached clients.
 
 Only the `opencode` command is intercepted. Commands such as `npm`, `python`,
 `cargo`, and `git` use your ordinary local tools. Outside registered repositories,
@@ -364,6 +370,11 @@ cancellation and retry. It requires internet access and Go 1.26 or newer to buil
 the downloaded interface. Synchronization may pause briefly during installation.
 The same update is available from the CLI with `molt update`.
 
+Already-open OpenCode attachments keep the wrapper code they started with.
+Start a new attachment after upgrading to use updated session behavior. A terminal
+opened before the detach-on-exit change can still abort its work when it closes,
+even when the installed executable has already been updated.
+
 To install from a local source checkout, use **Maintenance → Upgrade from checkout**.
 Run the installer with your existing `MOLT_HOME`. It preserves configuration,
 credentials, and ownership records. Existing contained projects rebuild into the
@@ -388,6 +399,8 @@ bash tests/dashboard_test.sh
 bash tests/integration_test.sh
 # Dashboard tests, static checks and build:
 (cd tui && go test -race ./... && go vet ./... && CGO_ENABLED=0 go build -trimpath -o ../bin/molt-tui .)
+# Real OpenCode client/server attachment checks, using a local model fixture:
+(cd tui && MOLT_TEST_OPENCODE_CLIENT=/path/to/opencode MOLT_TEST_OPENCODE_SERVER=/path/to/server-opencode go test -run TestRealOpenCodeDetachAndResume -v .)
 ```
 
 The shell tests use isolated tool doubles. The dashboard Go tests cover telemetry,
@@ -396,6 +409,10 @@ and contextual controls, grouped help, readable menu details and confirmation
 scrolling, cancellation prompts, native management routing, complete scan results,
 small-terminal validation, drag-to-copy with Unicode and streaming output,
 clipboard failure feedback, and real embedded PTY input, queries and resize.
+The opt-in real-client attachment test uses isolated OpenCode data and a local
+streaming-model fixture. It checks `/exit`, terminal closure, continued progress,
+reconnection without another prompt, and explicit Stop. The server executable
+defaults to the client executable when `MOLT_TEST_OPENCODE_SERVER` is unset.
 The TUI tests build Bubble Tea and use an `expect` pseudo-terminal with isolated
 SSH/tool doubles. They check scanning and registration, aliases, password input,
 cancellation, clipboard shortcuts and mouse release, resize, terminal restoration,
