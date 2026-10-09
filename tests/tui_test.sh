@@ -48,6 +48,27 @@ mkdir -p "$HOME/.ssh"
 printf 'Include "%s/aliases.conf"\n' "$TMP" >"$HOME/.ssh/config"
 printf 'Host unreachable-vm\n  HostName vm.example\n  User ubuntu\nHost alternate-vm\n  HostName alternate.example\n  User developer\n  Port 2222\n' >"$TMP/aliases.conf"
 export TUI_ROOT="$ROOT" TUI_TMP="$TMP"
+mkdir -p "$TMP/update-source"
+cp -R "$ROOT/bin" "$ROOT/shims" "$ROOT/remote" "$ROOT/tui" "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/config.example" "$ROOT/tools.lock" "$TMP/update-source/"
+rm -f "$TMP/update-source/bin/molt-tui"
+cat >"$TMP/bin/git" <<'GIT'
+#!/usr/bin/env bash
+if [[ "$*" == '-c credential.interactive=false clone --depth 1 --single-branch --branch main https://github.com/DerekNGAI/molt.git '* ]]; then
+  cp -R "$TUI_TMP/update-source" "${!#}"
+elif [[ "$*" == '-C '*' rev-parse --short HEAD' ]]; then printf 'abcdef0\n'
+else exec /usr/bin/git "$@"; fi
+GIT
+cat >"$TMP/bin/go" <<'GO'
+#!/usr/bin/env bash
+[[ -z "${MOLT_TUI_BINARY:-}" ]] || exit 3
+cat >../bin/molt-tui <<'TUI'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TUI_TMP/restarted-tui"
+exec "$TUI_TMP/molt-tui" "$@"
+TUI
+chmod +x ../bin/molt-tui
+GO
+chmod +x "$TMP/bin/git" "$TMP/bin/go"
 /usr/bin/expect "$ROOT/tests/tui_test.exp"
 [[ ! -e "$MOLT_HOME" ]] || { printf 'FAIL: TUI uninstall left the installation\n' >&2; exit 1; }
 mkdir -p "$TMP/vm"

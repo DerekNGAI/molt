@@ -186,7 +186,7 @@ to save and Escape to discard, with confirmation for both.
 | Guided setup | Configure SSH, prepare Docker, enable shell activation |
 | OpenCode | Attach, provider authentication, models, server configuration |
 | Settings | Folders, OpenCode port range, animations, shell activation |
-| Maintenance | Diagnostics, VM preparation, repair, upgrade, cleanup |
+| Maintenance | Update MOLT, diagnostics, VM preparation, repair, upgrade from checkout, cleanup |
 | Uninstall | Complete removal, optional Docker preparation reversal, local-only removal |
 
 The dashboard adapts to terminal size: wide terminals show three system panels;
@@ -300,6 +300,14 @@ Complete removal is the default when VM changes are recorded.
 
 ## Upgrading
 
+Choose **Maintenance → Update MOLT** to download and install the latest `main`
+from `DerekNGAI/molt`, then select **Restart control center** to load the updated
+interface in the same terminal. The update streams its progress and supports
+cancellation and retry. It requires internet access and Go 1.26 or newer to build
+the downloaded interface. Synchronization may pause briefly during installation.
+The same update is available from the CLI with `molt update`.
+
+To install from a local source checkout, use **Maintenance → Upgrade from checkout**.
 Run the installer with your existing `MOLT_HOME`. It preserves configuration,
 credentials, and ownership records. Existing contained projects rebuild into the
 plain Ubuntu OpenCode container on their next launch while retaining their mirror

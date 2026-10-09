@@ -380,6 +380,9 @@ func (m *model) maintenanceMenu() tea.Cmd {
 		menuItem{"Clean empty VM workspaces", func() tea.Cmd {
 			return m.confirm("Remove remote workspaces?", "Remove recorded empty workspace roots from the VMs.", returnTo, func() tea.Cmd { return m.run("Remove remote workspaces", returnTo, nil, "remove-remote-roots") })
 		}},
+		menuItem{"Update MOLT", func() tea.Cmd {
+			return m.confirm("Update MOLT?", "Download and install the latest MOLT from main. Settings, credentials, and project records are kept. Go 1.26 or newer is required to build the interface. Synchronization may pause briefly; restart the control center afterward.", returnTo, func() tea.Cmd { return m.updateMolt(returnTo) })
+		}},
 		menuItem{"Repair installation", func() tea.Cmd { return m.installFrom(filepath.Join(m.b.Home, "current"), returnTo) }},
 		menuItem{"Upgrade from checkout", func() tea.Cmd {
 			return m.showForm("Upgrade MOLT", "Select a MOLT source checkout.", returnTo, func(v []string) tea.Cmd {
@@ -399,11 +402,34 @@ func (m *model) maintenanceMenu() tea.Cmd {
 		"Stop the local SSH and synchronization helpers.",
 		"Remove all owned project resources. Mac checkouts are kept. Confirmation required.",
 		"Remove recorded empty workspace roots from the VMs. Confirmation required.",
+		"Download the latest MOLT from main and install it here. Requires internet access and Go 1.26 or newer.",
 		"Reinstall from the current installation's source.",
 		"Choose a MOLT source checkout to install an upgrade.",
 		"Open in Finder: " + m.b.Home,
 	}
 	return nil
+}
+func (m *model) updateMolt(returnTo func() tea.Cmd) tea.Cmd {
+	if m.action != "" || m.sessionCancel != nil {
+		return m.showMessage("Action in progress", "Finish or cancel the current operation first.", returnTo)
+	}
+	if m.queryCancel != nil {
+		m.queryCancel()
+		m.queryID++
+	}
+	m.updating, m.exclusive = true, true
+	m.collectorCancel()
+	cmd := m.run("Update MOLT", returnTo, func() tea.Cmd {
+		return m.showMenu("MOLT updated", "Restart the control center to load the update.", returnTo,
+			menuItem{"Restart control center", func() tea.Cmd { m.restart = true; return tea.Quit }})
+	}, "update")
+	m.retry = func() tea.Cmd { return m.updateMolt(returnTo) }
+	if m.action == "" {
+		m.updating, m.exclusive = false, false
+		m.resumeCollectors()
+		return tea.Batch(cmd, m.poll())
+	}
+	return cmd
 }
 func (m *model) installFrom(source string, returnTo func() tea.Cmd) tea.Cmd {
 	return m.runProgram("Install MOLT", returnTo, nil, "/bin/bash", filepath.Join(source, "install.sh"), "--non-interactive")

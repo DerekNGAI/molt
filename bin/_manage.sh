@@ -369,6 +369,41 @@ cmd_ui_action() {
   wait "$worker"
 }
 
+cmd_update() (
+  [[ $# == 0 ]] || die 'molt update'
+  molt_owned_home || die 'install molt before updating'
+  need git
+  molt_state
+  umask 077
+  daemon_running=0
+  [[ ! -S "$MOLT_HOME/state/home/.mutagen/daemon/daemon.sock" ]] || daemon_running=1
+  # Installer sources must be outside MOLT_HOME.
+  work="$(mktemp -d /tmp/molt-update.XXXXXX)"
+  cleanup_update() {
+    local rc=$?
+    trap - EXIT
+    rm -rf -- "$work"
+    if [[ "$daemon_running" == 1 && ! -S "$MOLT_HOME/state/home/.mutagen/daemon/daemon.sock" && ! -d "$MOLT_HOME/state/install.lock" ]]; then
+      if ! molt_mutagen daemon start; then
+        molt_error 'could not resume synchronization; run molt start <repo> to retry'
+        [[ "$rc" != 0 ]] || rc=1
+      fi
+    fi
+    exit "$rc"
+  }
+  trap cleanup_update EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  log 'downloading the latest MOLT from main...'
+  GIT_TERMINAL_PROMPT=0 git -c credential.interactive=false clone --depth 1 --single-branch --branch main \
+    https://github.com/DerekNGAI/molt.git "$work/source" || die 'could not download MOLT; check your internet connection and retry'
+  [[ -f "$work/source/install.sh" && -f "$work/source/tools.lock" && -f "$work/source/tui/go.mod" ]] || die 'downloaded source is not a MOLT checkout'
+  log "installing MOLT $(git -C "$work/source" rev-parse --short HEAD)..."
+  # Build the downloaded TUI instead of copying an older installer executable.
+  env -u MOLT_TUI_BINARY /bin/bash "$work/source/install.sh" --non-interactive || exit $?
+  log 'MOLT updated. Restart the control center to load the update.'
+)
+
 cmd_tools() {
   local name binary
   for name in MUTAGEN OPENCODE; do

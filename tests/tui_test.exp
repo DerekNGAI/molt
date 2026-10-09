@@ -119,6 +119,28 @@ send -- "3"
 see "WORKSPACES"
 stty rows 32 columns 100 < $spawn_out(slave,name)
 after 300
+# Updating preserves the installation on cancel and restarts into the new TUI.
+set previous_release [file readlink "$env(MOLT_HOME)/current"]
+palette 5
+see "MAINTENANCE"
+down 6
+enter
+see "UPDATE MOLT?"
+send -- "n"
+see "MAINTENANCE"
+if {[file readlink "$env(MOLT_HOME)/current"] != $previous_release} { puts stderr "FAIL: cancelled update replaced the release"; exit 1 }
+down 6
+enter
+see "UPDATE MOLT?"
+send -- "y"
+see "MOLT UPDATED"
+see "Restart control center"
+if {[file readlink "$env(MOLT_HOME)/current"] == $previous_release} { puts stderr "FAIL: update did not install a new release"; exit 1 }
+enter
+see "MAINTENANCE"
+if {![file exists "$env(TUI_TMP)/restarted-tui"]} { puts stderr "FAIL: restart did not load the updated executable"; exit 1 }
+escape
+see "WORKSPACES"
 # Registered-only removal works when every SSH request fails.
 close [open "$env(TUI_TMP)/offline-ssh" w]
 close [open "$env(TUI_TMP)/ssh.log" w]

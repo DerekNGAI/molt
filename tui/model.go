@@ -66,7 +66,7 @@ type model struct {
 	sessionCancel                                                                context.CancelFunc
 	sessionBack, afterSession                                                    func() tea.Cmd
 	sessionTitle                                                                 string
-	exclusive, installing                                                        bool
+	exclusive, installing, updating, restart                                     bool
 	source                                                                       string
 	startScreen                                                                  string
 	collectorContext                                                             context.Context
@@ -443,7 +443,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.record(msg.Name + " completed")
 		}
 		// Persist the last output for inspection after the control center exits.
-		if !m.installing && !m.exclusive {
+		if !m.installing && (!m.exclusive || m.updating) {
 			saveOutput(filepath.Join(msg.Work, "output"), m.b.Home)
 		}
 		os.RemoveAll(msg.Work)
@@ -466,7 +466,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.exclusive {
 			m.resumeCollectors()
 		}
-		m.exclusive = false
+		m.exclusive, m.updating = false, false
 		if msg.Error == nil && next != nil {
 			return m, tea.Batch(next(), m.poll())
 		}
@@ -678,7 +678,7 @@ func palette() []paletteItem {
 		{"Guided setup", "Connect a VM, choose folders, and prepare Docker.", []string{"setup"}, true},
 		{"OpenCode", "Attach to a project, manage providers, and edit server settings.", []string{"opencode"}, true},
 		{"Settings", "Choose folders, ports, animations, and shell activation.", []string{"settings"}, true},
-		{"Maintenance", "Check diagnostics, repair, upgrade, and clean up resources.", []string{"maintenance"}, true},
+		{"Maintenance", "Update MOLT, check diagnostics, repair, and clean up resources.", []string{"maintenance"}, true},
 		{"Tool versions", "Show the installed MOLT, Mutagen, and OpenCode versions.", []string{"tools"}, false},
 		{"Start all projects", "Start every registered workspace.", []string{"up"}, false},
 		{"Stop all projects", "Stop all workspaces and flush synchronization. Confirmation required.", []string{"down"}, false},

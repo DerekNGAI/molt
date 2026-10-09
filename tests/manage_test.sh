@@ -226,6 +226,145 @@ test_install_options() (
   [[ ! -e "$MOLT_HOME" ]] || fail 'unknown installer option left an installation behind'
 )
 
+prepare_update() {
+  install 'update with spaces'
+  export UPDATE_SOURCE="$TMP/update-source" UPDATE_RECORD="$TMP/update-source-path" UPDATE_STARTED="$TMP/update-started"
+  mkdir -p "$UPDATE_SOURCE"
+  cp -R "$ROOT/bin" "$ROOT/shims" "$ROOT/remote" "$ROOT/tui" "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/config.example" "$ROOT/tools.lock" "$UPDATE_SOURCE/"
+  rm -f "$UPDATE_SOURCE/bin/molt-tui"
+  cat >"$TMP/bin/git" <<'GIT'
+#!/usr/bin/env bash
+if [[ "$*" == '-c credential.interactive=false clone --depth 1 --single-branch --branch main https://github.com/DerekNGAI/molt.git '* ]]; then
+  [[ "$GIT_TERMINAL_PROMPT" == 0 ]] || exit 3
+  printf '%s\n' "${!#}" >"$UPDATE_RECORD"
+  mkdir -p "${!#}"
+  case "${UPDATE_MODE:-}" in
+    download-failure) exit 22 ;;
+    invalid-source) exit 0 ;;
+    cancel-download) touch "$UPDATE_STARTED"; sleep 60 & wait; exit ;;
+  esac
+  cp -R "$UPDATE_SOURCE/." "${!#}/"
+elif [[ "$*" == '-C '*' rev-parse --short HEAD' ]]; then printf 'abcdef0\n'
+else exec /usr/bin/git "$@"; fi
+GIT
+  cat >"$TMP/bin/go" <<'GO'
+#!/usr/bin/env bash
+[[ -z "${MOLT_TUI_BINARY:-}" ]] || exit 3
+case "${UPDATE_MODE:-}" in
+  build-failure) exit 42 ;;
+  cancel-build) touch "$UPDATE_STARTED"; sleep 60 & wait; exit ;;
+esac
+printf '#!/usr/bin/env bash\nprintf "updated TUI fixture\\n"\n' >../bin/molt-tui
+chmod +x ../bin/molt-tui
+GO
+  chmod +x "$TMP/bin/git" "$TMP/bin/go"
+}
+
+update_daemon_fixture() {
+  cat >"$TMP/bin/mutagen" <<'MUTAGEN'
+#!/usr/bin/env bash
+case "$*" in
+  version) printf '0.18.1\n' ;;
+  'daemon stop') rm -f "$MOLT_HOME/state/home/.mutagen/daemon/daemon.sock" ;;
+  'daemon start')
+    [[ "${UPDATE_MODE:-}" != daemon-failure ]] || exit 1
+    python3 - "$MOLT_HOME/state/home/.mutagen/daemon" <<'PY'
+import os, socket, sys
+os.makedirs(sys.argv[1], exist_ok=True)
+os.chdir(sys.argv[1])
+socket.socket(socket.AF_UNIX).bind('daemon.sock')
+PY
+    ;;
+esac
+MUTAGEN
+  "$TMP/bin/mutagen" daemon start
+}
+
+test_update() (
+  prepare_update
+  local original="$(readlink "$MOLT_HOME/current")"
+  "$MOLT" config set MOLT_HOST offline-vm
+  printf 'keep password\n' >"$MOLT_HOME/opencode.password"
+  mkdir -p "$TMP/update-repo"
+  git -C "$TMP/update-repo" init -q
+  "$MOLT" register "$TMP/update-repo" >/dev/null
+  local id="$("$MOLT" project-find "$TMP/update-repo")"
+  cp "$MOLT_HOME/config" "$TMP/update-config.before"
+  cp "$MOLT_HOME/.install-manifest" "$TMP/update-manifest.before"
+  update_daemon_fixture
+  "$MOLT" update >"$TMP/update.log" 2>&1 || { cat "$TMP/update.log" >&2; fail 'update failed'; }
+  [[ "$(readlink "$MOLT_HOME/current")" != "$original" ]] || fail 'update did not install a new release'
+  [[ "$("$MOLT_HOME/bin/molt-tui")" == 'updated TUI fixture' ]] || fail 'update reused the old TUI executable'
+  cmp -s "$TMP/update-config.before" "$MOLT_HOME/config" || fail 'update changed configuration'
+  cmp -s "$TMP/update-manifest.before" "$MOLT_HOME/.install-manifest" || fail 'update changed installation ownership or dependencies'
+  [[ "$(<"$MOLT_HOME/opencode.password")" == 'keep password' && "$("$MOLT" project-find "$TMP/update-repo")" == "$id" ]] || fail 'update discarded credentials or project records'
+  [[ ! -e "$(dirname "$(<"$UPDATE_RECORD")")" && ! -d "$MOLT_HOME/state/install.lock" ]] || fail 'update left its source or lock behind'
+  [[ -S "$MOLT_HOME/state/home/.mutagen/daemon/daemon.sock" ]] || fail 'update left synchronization stopped'
+  if "$MOLT" update --invalid; then fail 'update accepted an unknown option'; fi
+  rm -f "$TMP/bin/git" "$TMP/bin/go"
+)
+
+test_update_failures() (
+  prepare_update
+  local original="$(readlink "$MOLT_HOME/current")" mode
+  cp "$MOLT_HOME/.install-manifest" "$TMP/update-manifest.before"
+  for mode in download-failure invalid-source build-failure; do
+    if UPDATE_MODE="$mode" "$MOLT" update >"$TMP/update.log" 2>&1; then fail "$mode succeeded"; fi
+    [[ "$(readlink "$MOLT_HOME/current")" == "$original" ]] || fail "$mode replaced the working release"
+    cmp -s "$TMP/update-manifest.before" "$MOLT_HOME/.install-manifest" || fail "$mode changed the manifest"
+    [[ ! -e "$(dirname "$(<"$UPDATE_RECORD")")" && ! -d "$MOLT_HOME/state/install.lock" ]] || fail "$mode left its source or lock behind"
+    "$MOLT" help >/dev/null || fail "$mode broke the CLI"
+  done
+  update_daemon_fixture
+  mkdir -p "$TMP/update-failing-mv"
+  cat >"$TMP/update-failing-mv/mv" <<'MV'
+#!/usr/bin/env bash
+if [[ "${!#}" == "$MOLT_HOME/.install-manifest" && "$1" == */manifest ]]; then exit 1; fi
+exec /bin/mv "$@"
+MV
+  chmod +x "$TMP/update-failing-mv/mv"
+  if PATH="$TMP/update-failing-mv:$PATH" "$MOLT" update >"$TMP/update.log" 2>&1; then fail 'failed commit succeeded'; fi
+  [[ "$(readlink "$MOLT_HOME/current")" == "$original" && -S "$MOLT_HOME/state/home/.mutagen/daemon/daemon.sock" ]] || fail 'failed commit did not restore the release and synchronization'
+  cmp -s "$TMP/update-manifest.before" "$MOLT_HOME/.install-manifest" || fail 'failed commit changed the manifest'
+  if UPDATE_MODE=daemon-failure "$MOLT" update >"$TMP/update.log" 2>&1; then fail 'failed synchronization restart succeeded'; fi
+  grep -Fq 'could not resume synchronization' "$TMP/update.log" || fail 'failed synchronization restart was not explained'
+  rm -f "$TMP/bin/git" "$TMP/bin/go"
+)
+
+test_update_cancellation() (
+  prepare_update
+  local original="$(readlink "$MOLT_HOME/current")" mode
+  cp "$MOLT_HOME/.install-manifest" "$TMP/update-manifest.before"
+  for mode in cancel-download cancel-build; do
+    rm -f "$UPDATE_STARTED"
+    UPDATE_MODE="$mode" python3 - "$MOLT" <<'PY'
+import os, pathlib, signal, subprocess, sys, time
+with open(os.environ['UPDATE_RECORD'] + '.log', 'w') as log:
+    child = subprocess.Popen([sys.argv[1], 'update'], stdout=log, stderr=log, start_new_session=True)
+    try:
+        deadline = time.monotonic() + 10
+        while not pathlib.Path(os.environ['UPDATE_STARTED']).exists():
+            assert child.poll() is None and time.monotonic() < deadline, 'update did not reach cancellation point'
+            time.sleep(.02)
+        os.killpg(child.pid, signal.SIGTERM)
+        assert child.wait(timeout=5) != 0, 'cancelled update succeeded'
+        source = pathlib.Path(os.environ['UPDATE_RECORD']).read_text().strip()
+        while pathlib.Path(source).parent.exists() or pathlib.Path(os.environ['MOLT_HOME'], 'state/install.lock').exists():
+            assert time.monotonic() < deadline, 'cancelled update did not clean up'
+            time.sleep(.02)
+    finally:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+PY
+    [[ "$(readlink "$MOLT_HOME/current")" == "$original" ]] || fail 'cancelled update replaced the working release'
+    cmp -s "$TMP/update-manifest.before" "$MOLT_HOME/.install-manifest" || fail 'cancelled update changed the manifest'
+  done
+  rm -f "$TMP/bin/git" "$TMP/bin/go"
+)
+
 test_action_capture() (
   install capture
   local work rc=0
@@ -252,7 +391,7 @@ test_ssh_paths() (
   [[ "$output" == *"$expected"* ]] || fail 'SSH interpreted spaces/percent tokens instead of the contained known-hosts path'
 )
 
-for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_install_repair test_native_install test_install_options test_action_capture test_ssh_paths}; do
+for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_install_repair test_native_install test_install_options test_update test_update_failures test_update_cancellation test_action_capture test_ssh_paths}; do
   "$test"
   printf 'PASS: %s\n' "$test"
 done

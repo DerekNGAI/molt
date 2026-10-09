@@ -604,6 +604,7 @@ molt — remote OpenCode workspaces
   molt reset [repo|--all] [--local-only]  remove project resources, or only local registration and sync
   molt setup-state [repo]     read recorded VM/project setup state without SSH
   molt tools                  show tool versions
+  molt update                 install the latest MOLT from main
 
   opencode [args]              auto-start and attach in registered repositories
   MOLT_LOCAL=1 opencode        run locally with your normal OpenCode state
@@ -624,7 +625,7 @@ main() {
     restart) cmd_stop_project "$@" && cmd_start "$@" ;;
     up) for state in "$MOLT_PROJECTS_HOME"/*/path; do [[ ! -f "$state" ]] || cmd_start "@$(basename "${state%/path}")"; done ;;
     down) cmd_down ;; status) cmd_status ;; doctor) cmd_doctor ;;
-    config) cmd_config "$@" ;; connection) cmd_connection "$@" ;; shell) cmd_shell "$@" ;; tools) cmd_tools ;;
+    config) cmd_config "$@" ;; connection) cmd_connection "$@" ;; shell) cmd_shell "$@" ;; tools) cmd_tools ;; update) cmd_update "$@" ;;
     ui-action) cmd_ui_action "$@" ;; remote-oc) cmd_remote_oc "$@" ;; server-config) cmd_server_config "$@" ;;
     ssh) ssh_up; ssh "$MOLT_HOST" "$@" ;;
     oc|opencode) cmd_oc "$@" ;;

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -46,5 +47,12 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "molt-tui:", err)
 		os.Exit(1)
+	}
+	if m.restart {
+		m.collectors.Wait()
+		if err := syscall.Exec(m.b.CLI, []string{m.b.CLI, "menu", "maintenance"}, append(os.Environ(), "MOLT_HOME="+m.b.Home)); err != nil {
+			fmt.Fprintln(os.Stderr, "molt-tui: cannot restart:", err)
+			os.Exit(1)
+		}
 	}
 }
