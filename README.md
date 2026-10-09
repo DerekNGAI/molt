@@ -157,6 +157,7 @@ existing synchronization continue independently.
 | `s`, `S`, `r` | Start, stop, restart selected project |
 | `o` | Attach OpenCode inside the embedded terminal pane |
 | `L`, `a`, `y` | Server logs, activity, synchronization details |
+| `Y` in output or a result dialog | Copy all retained output or the entire message |
 | `c`, `d`, `n` | Connect VM, diagnostics, register a repository |
 | `:` or Ctrl-P | Open all management commands |
 | `R`, `p` | Refresh now, pause/resume polling |
@@ -169,6 +170,28 @@ for grouped navigation, workspace, monitoring, and session shortcuts; use arrows
 or `j`/`k` to scroll through the help.
 
 Mouse clicks select projects and focus panels; the wheel moves or scrolls.
+Drag across text in the output/activity panel, a running action, or an error/result
+dialog to highlight it. Releasing the mouse copies the selected text to your Mac's
+clipboard and shows **Copied to clipboard**. Panel borders and titles are excluded.
+The displayed text stays still during a drag while background monitoring and
+actions continue; resize or keyboard navigation cancels the selection.
+
+Press `Y` to copy all retained output from the focused output/activity panel or a
+running action, or the entire message from a result dialog, including text outside
+the visible area. This uses macOS's built-in `pbcopy`; copying failures appear in
+the footer and activity feed. Embedded sessions retain the child application's
+mouse and keyboard controls.
+
+To copy the last completed action's saved output from another Mac terminal:
+
+```bash
+pbcopy < "${MOLT_HOME:-$HOME/.molt}/state/ui/last.log"
+```
+
+Use your installation folder if different. The next action replaces this log;
+errors shown before an action starts and interactive session transcripts are not
+saved there.
+
 Stop/restart actions ask for confirmation. Escape cancels a running action after
 confirmation; quitting during an action also asks before cancelling it.
 
@@ -354,10 +377,12 @@ The shell tests use isolated tool doubles. The dashboard Go tests cover telemetr
 sync conflicts, safe terminal text, filtering, stable selection, compact layouts
 and contextual controls, grouped help, readable menu details and confirmation
 scrolling, cancellation prompts, native management routing, complete scan results,
-small-terminal validation, and real embedded PTY input, queries and resize.
+small-terminal validation, drag-to-copy with Unicode and streaming output,
+clipboard failure feedback, and real embedded PTY input, queries and resize.
 The TUI tests build Bubble Tea and use an `expect` pseudo-terminal with isolated
 SSH/tool doubles. They check scanning and registration, aliases, password input,
-cancellation, resize, terminal restoration, settings, and the guided installation
-through uninstallation flow. The opt-in integration test requires Docker and creates a disposable SSH
-host with its own Docker daemon; it checks real builds, synchronization in both
+cancellation, clipboard shortcuts and mouse release, resize, terminal restoration,
+settings, and the guided installation through uninstallation flow. The opt-in
+integration test requires Docker and creates a disposable SSH host with its own
+Docker daemon; it checks real builds, synchronization in both
 directions, server health, stop/restart, and complete removal.

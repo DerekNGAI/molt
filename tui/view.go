@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"math"
 	"strings"
 	"time"
@@ -327,9 +328,21 @@ func (m *model) projectView(l dimensions) string {
 	return box(title, strings.Join(lines, "\n"), m.width, l.projects, m.focus == 2)
 }
 
+func (m *model) activityLines() []string {
+	var lines []string
+	if m.logs {
+		lines = m.output
+	} else {
+		for _, e := range m.events {
+			lines = append(lines, muted.Render(e.At.Format("15:04:05"))+"  "+text.Render(e.Text))
+		}
+	}
+	return lines
+}
+
 func (m *model) activityView(l dimensions) string {
 	title := "ACTIVITY / session events"
-	var lines []string
+	lines := m.activityLines()
 	if m.logs {
 		title = "OUTPUT / last action"
 		if m.logProject != "" {
@@ -342,13 +355,8 @@ func (m *model) activityView(l dimensions) string {
 		if m.action != "" {
 			title = "OUTPUT / " + m.action + " · " + m.spinner() + " running"
 		}
-		lines = m.output
 		if len(lines) == 0 {
 			lines = []string{"Waiting for output…"}
-		}
-	} else {
-		for _, e := range m.events {
-			lines = append(lines, muted.Render(e.At.Format("15:04:05"))+"  "+text.Render(e.Text))
 		}
 	}
 	if m.scroll > 0 {
@@ -430,6 +438,13 @@ func (m *model) overlayView() string {
 }
 
 func (m *model) View() string {
+	if m.selection != nil {
+		if m.selection.Overlay == m.overlay {
+			return m.selection.view()
+		}
+		m.selection = nil
+	}
+	m.copyArea = image.Rectangle{}
 	w := max(1, m.width)
 	right := muted.Render("LIVE · 3s")
 	if m.paused {
@@ -461,6 +476,11 @@ func (m *model) View() string {
 	} else {
 		content = m.topView(l) + "\n" + m.projectView(l) + "\n" + m.activityView(l)
 	}
+	if m.overlay == "" && (!l.compact || m.focus == 3) {
+		end := lipgloss.Height(content)
+		m.copyArea = image.Rect(2, end-l.bottom+2, w-2, end-1)
+	}
+	m.copyArea = m.copyArea.Add(image.Pt(0, 2)).Intersect(image.Rect(0, 2, w, max(2, m.height-2)))
 	foot := m.footer(w)
 	path := m.current().Path
 	if path == "" {
@@ -478,7 +498,8 @@ func (m *model) View() string {
 	for i := range lines {
 		lines[i] = fit(lines[i], w)
 	}
-	return strings.Join(lines, "\n")
+	m.rendered = strings.Join(lines, "\n")
+	return m.rendered
 }
 
 func keyboardHelp() string {
@@ -508,6 +529,7 @@ func keyboardHelp() string {
 		row("d", "Diagnostics"),
 		row("R", "Refresh now"),
 		row("p", "Pause / resume"),
+		row("Y in output", "Copy all retained output"),
 		"", accent.Bold(true).Render("COMMANDS & SESSIONS"),
 		row(": · Ctrl-P · m", "Commands"),
 		row("i in a menu", "Full item details"),
@@ -515,6 +537,7 @@ func keyboardHelp() string {
 		row("Ctrl-]", "Session controls"),
 		row("q · Ctrl-C", "Quit dashboard"),
 		"", muted.Render("Mouse: click to focus/select; wheel to move/scroll."),
+		muted.Render("Drag output or a message to copy on release."),
 		muted.Render("Motion: Settings → Animations; NO_COLOR disables it."),
 	}, "\n")
 }
@@ -532,9 +555,9 @@ func (m *model) footer(width int) string {
 	case m.overlay == "help" || m.overlay == "detail":
 		items = []string{"Esc close", "↑↓ scroll", "Ctrl-D/U page", "Enter close"}
 	case m.overlay == "message":
-		items = []string{"Esc back", "↑↓ scroll", "Enter back"}
+		items = []string{"Esc back", "Y copy", "↑↓ scroll", "Enter back"}
 		if m.dialog.Retry != nil {
-			items = []string{"Esc back", "r retry", "↑↓ scroll", "Enter back"}
+			items = []string{"Esc back", "r retry", "Y copy", "↑↓ scroll", "Enter back"}
 		}
 	case m.overlay == "loading":
 		items = []string{"Esc cancel"}
@@ -550,7 +573,7 @@ func (m *model) footer(width int) string {
 	case m.overlay == "confirm" || m.overlay == "stop" || m.overlay == "restart" || m.overlay == "down" || m.overlay == "quit" || m.overlay == "cancel":
 		items = []string{"n/Esc cancel", "y confirm", "↑↓ scroll"}
 	case m.overlay == "action":
-		items = []string{"Esc cancel", "↑↓ scroll", "q quit"}
+		items = []string{"Esc cancel", "Y copy", "↑↓ scroll", "q quit"}
 	default:
 		items = []string{": commands", "? help"}
 		if m.action != "" {
@@ -568,7 +591,7 @@ func (m *model) footer(width int) string {
 				items = append(items, "Enter details", "o OpenCode", "/ filter")
 			}
 		case 3:
-			items = append(items, "↑↓ scroll", "G follow", "a activity")
+			items = append(items, "↑↓ scroll", "Y copy", "G follow", "a activity")
 		}
 		items = append(items, "q quit", "Tab panels")
 	}
@@ -586,5 +609,9 @@ func (m *model) footer(width int) string {
 		parts = append(parts, accent.Bold(true).Render(key)+" "+muted.Render(action))
 		used += n
 	}
-	return " " + strings.Join(parts, muted.Render(" · "))
+	footer := " " + strings.Join(parts, muted.Render(" · "))
+	if m.copyNotice != "" {
+		footer = " " + text.Render(m.copyNotice) + muted.Render(" · ") + strings.TrimSpace(footer)
+	}
+	return footer
 }

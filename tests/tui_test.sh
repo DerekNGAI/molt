@@ -15,6 +15,10 @@ export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/ope
 for tool in mutagen opencode; do
   printf '#!/usr/bin/env bash\ncase "$*" in version) printf "0.18.1\\n" ;; --version) printf "1.18.34\\n" ;; esac\n' >"$TMP/bin/$tool"
 done
+cat >"$TMP/bin/pbcopy" <<'CLIPBOARD'
+#!/usr/bin/env bash
+cat >"$TUI_TMP/clipboard"
+CLIPBOARD
 cat >"$TMP/bin/ssh" <<'SSH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$TUI_TMP/ssh.log"

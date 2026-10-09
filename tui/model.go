@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,11 @@ type model struct {
 	target                                                                       project
 	events                                                                       []event
 	output                                                                       []string
+	rendered                                                                     string
+	copyArea                                                                     image.Rectangle
+	selection                                                                    *textSelection
+	copyID                                                                       int
+	copyNotice                                                                   string
 	cancelAction                                                                 context.CancelFunc
 	menu                                                                         menuState
 	form                                                                         formState
@@ -334,6 +340,7 @@ func (m *model) startProcess(name, program string, args ...string) tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.selection, m.rendered = nil, ""
 		m.width, m.height = msg.Width, msg.Height
 		if m.session != nil {
 			m.session.resize(m.sessionSize())
@@ -344,6 +351,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.sessionStarted(msg)
 	case sessionOutputMsg:
 		return m, m.sessionOutput(msg)
+	case clipboardMsg:
+		if msg.ID != m.copyID {
+			return m, nil
+		}
+		m.copyNotice = "Copied to clipboard"
+		if msg.Error != nil {
+			m.copyNotice = "Copy failed: " + clean(msg.Error.Error())
+			m.record(m.copyNotice)
+		}
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearClipboardMsg(msg.ID) })
+	case clearClipboardMsg:
+		if int(msg) == m.copyID {
+			m.copyNotice = ""
+		}
 	case pollMsg:
 		if m.work != "" {
 			m.output = readTail(filepath.Join(m.work, "output"))
@@ -487,6 +508,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.session.mouse(msg)
 			return m, nil
 		}
+		if cmd, handled := m.selectionMouse(msg); handled {
+			return m, cmd
+		}
 		if m.nativeMouse(msg) {
 			return m, nil
 		}
@@ -528,6 +552,7 @@ func (m *model) selectRow(row int) {
 }
 
 func (m *model) key(msg tea.KeyMsg) tea.Cmd {
+	m.selection = nil
 	k := msg.String()
 	if m.searching {
 		switch k {
@@ -550,6 +575,11 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		return nil
+	}
+	if k == "Y" && !msg.Paste {
+		if m.overlay == "message" || m.overlay == "action" || m.overlay == "" && m.focus == 3 {
+			return m.copyOutput()
+		}
 	}
 	if m.overlay != "" {
 		return m.overlayKey(msg)

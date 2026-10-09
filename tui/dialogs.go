@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"image"
 	"strings"
 	"time"
 
@@ -69,6 +70,7 @@ func (m *model) showForm(title, help string, back func() tea.Cmd, submit func([]
 	return nil
 }
 func (m *model) showMessage(title, body string, back func() tea.Cmd) tea.Cmd {
+	m.selection, m.rendered = nil, ""
 	m.overlay, m.overlayScroll = "message", 0
 	m.dialog = dialogState{Title: title, Body: safeText(body), Back: back}
 	return nil
@@ -404,7 +406,13 @@ func (m *model) nativeView() (string, bool) {
 		lines = append(lines, "")
 	}
 	body = strings.Join(lines, "\n")
-	return lipgloss.Place(m.width, max(1, m.height-4), lipgloss.Center, lipgloss.Center, box(strings.ToUpper(title), body, w, h, true)), true
+	panel := box(strings.ToUpper(title), body, w, h, true)
+	if m.overlay == "message" || m.overlay == "action" {
+		pw, ph := lipgloss.Width(panel), lipgloss.Height(panel)
+		x, y := max(0, m.width-pw)/2, max(0, m.height-4-ph)/2
+		m.copyArea = image.Rect(x+2, y+2, x+pw-2, y+ph-1)
+	}
+	return lipgloss.Place(m.width, max(1, m.height-4), lipgloss.Center, lipgloss.Center, panel), true
 }
 
 func (m *model) menuView(menu menuState) string {

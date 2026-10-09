@@ -79,6 +79,22 @@ see "Fixture SSH password:"
 send -- "quiet-secret\r"
 see "COMPLETED"
 see "Fixture login accepted"
+# Copy the entire result, then exercise real SGR drag/release events on its body.
+send -- "Y"
+see "Copied to clipboard"
+set file [open "$env(TUI_TMP)/clipboard" r]
+set copied [read $file]
+close $file
+if {[string first "Fixture login accepted" $copied]<0 || [string first "quiet-secret" $copied]>=0} { puts stderr "FAIL: result copying lost output or exposed password input"; exit 1 }
+set last_column [expr {8+[string length "Fixture login accepted"]-1}]
+send -- "\033\[<0;8;7M"
+send -- "\033\[<32;$last_column;7M"
+send -- "\033\[<0;$last_column;7m"
+after 250
+set file [open "$env(TUI_TMP)/clipboard" r]
+set copied [read $file]
+close $file
+if {$copied != "Fixture login accepted"} { puts stderr "FAIL: mouse release copied '$copied' instead of the selected result text"; exit 1 }
 enter
 see "WORKSPACES"
 # Cancel a hung background authentication check and its process group.
