@@ -148,16 +148,26 @@ existing synchronization continue independently.
 | `?`, `q` | Help, quit |
 | Ctrl-] in a session | Open session controls; confirm before ending the process |
 
+The footer shows shortcuts for the focused panel or open dialog. **Commands** and
+**Help** stay visible on the dashboard, including in compact terminals. Press `?`
+for grouped navigation, workspace, monitoring, and session shortcuts; use arrows
+or `j`/`k` to scroll through the help.
+
 Mouse clicks select projects and focus panels; the wheel moves or scrolls.
 Stop/restart actions ask for confirmation. Escape cancels a running action after
 confirmation; quitting during an action also asks before cancelling it.
 
 The command palette opens native Bubble Tea management screens. Scanning,
 registration, connections, setup, settings, maintenance, and removal stay inside
-the control center. Forms use Tab/Shift-Tab to switch fields and Enter to continue
-or save. Escape returns to the previous screen; confirmations default to cancel.
-Scan results show repository names and relative paths; press `i` to inspect the
-selected full path. `molt menu <screen>` opens the corresponding native screen.
+the control center. Command labels are concise, with an explanation below the
+selected item. Menus show the visible item range; Home/End or `g`/`G` jump to the
+first or last item. Press `i` to read full command descriptions, setting values,
+repository paths, or SSH destinations. Forms use Tab/Shift-Tab to switch fields
+and Enter to continue or save. Escape returns to the previous screen;
+confirmations default to cancel.
+Long confirmations scroll with arrows or `j`/`k`, keeping the confirm and cancel
+controls visible. Scan results show repository names and relative paths.
+`molt menu <screen>` opens the corresponding native screen.
 
 SSH authentication, key creation, administrator prompts, provider authentication,
 and OpenCode run in an embedded terminal pane with the MOLT header and controls
@@ -315,7 +325,8 @@ bash tests/integration_test.sh
 
 The shell tests use isolated tool doubles. The dashboard Go tests cover telemetry,
 sync conflicts, safe terminal text, filtering, stable selection, compact layouts
-and cancellation prompts, native management routing, complete scan results,
+and contextual controls, grouped help, readable menu details and confirmation
+scrolling, cancellation prompts, native management routing, complete scan results,
 small-terminal validation, and real embedded PTY input, queries and resize.
 The TUI tests build Bubble Tea and use an `expect` pseudo-terminal with isolated
 SSH/tool doubles. They check scanning and registration, aliases, password input,

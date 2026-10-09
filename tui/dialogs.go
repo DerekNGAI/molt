@@ -74,7 +74,7 @@ func (m *model) showMessage(title, body string, back func() tea.Cmd) tea.Cmd {
 	return nil
 }
 func (m *model) confirm(title, body string, back, yes func() tea.Cmd) tea.Cmd {
-	m.overlay = "confirm"
+	m.overlay, m.overlayScroll = "confirm", 0
 	m.dialog = dialogState{Title: title, Body: body, Back: back, Yes: yes}
 	return nil
 }
@@ -157,9 +157,9 @@ func (m *model) nativeKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				return back(m.menu.Items[m.menu.Index].Run), true
 			}
 		case "i":
-			if m.menu.Index < len(m.menu.Details) {
+			if m.menu.Index >= 0 && m.menu.Index < len(m.menu.Details) && m.menu.Details[m.menu.Index] != "" {
 				snapshot := m.menu
-				return m.showMessage("Repository path", snapshot.Details[snapshot.Index], func() tea.Cmd { m.menu = snapshot; m.overlay = "native-menu"; return nil }), true
+				return m.showMessage("Details / "+snapshot.Items[snapshot.Index].Title, snapshot.Details[snapshot.Index], func() tea.Cmd { m.menu = snapshot; m.overlay = "native-menu"; return nil }), true
 			}
 		}
 	case "form":
@@ -196,6 +196,16 @@ func (m *model) nativeKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			m.form.Error = ""
 		}
 	case "confirm":
+		switch k {
+		case "j", "down":
+			m.overlayScroll++
+		case "k", "up":
+			m.overlayScroll = max(0, m.overlayScroll-1)
+		case "ctrl+d", "pgdown":
+			m.overlayScroll += 5
+		case "ctrl+u", "pgup":
+			m.overlayScroll = max(0, m.overlayScroll-5)
+		}
 		if k == "y" {
 			return back(m.dialog.Yes), true
 		}
@@ -230,9 +240,9 @@ func (m *model) nativeKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case "action":
 		switch k {
 		case "esc", "ctrl+c":
-			m.overlay = "cancel"
+			m.overlay, m.overlayScroll = "cancel", 0
 		case "q":
-			m.overlay = "quit"
+			m.overlay, m.overlayScroll = "quit", 0
 		case "j", "down":
 			m.scroll = max(0, m.scroll-1)
 		case "k", "up":
@@ -341,26 +351,13 @@ func (m *model) nativeMouse(msg tea.MouseMsg) bool {
 
 func (m *model) nativeView() (string, bool) {
 	w, h := max(8, min(90, m.width-4)), max(5, m.height-6)
-	rows := max(1, h-6)
-	title, body, hint := "", "", ""
+	capacity := max(1, h-3)
+	title, body := "", ""
 	switch m.overlay {
 	case "session":
 		return m.sessionView(), true
 	case "native-menu":
-		title = m.menu.Title
-		body = fit(clean(m.menu.Help), w-4) + "\n\n"
-		start := max(0, m.menu.Index-rows+1)
-		for i := start; i < min(len(m.menu.Items), start+rows); i++ {
-			line := "  " + clean(m.menu.Items[i].Title)
-			if i == m.menu.Index {
-				line = selectedStyle.Render(fit("› "+clean(m.menu.Items[i].Title), w-4))
-			}
-			body += line + "\n"
-		}
-		hint = "↑/↓ choose · Enter open · Esc back"
-		if len(m.menu.Details) > 0 {
-			hint = "↑↓ choose · Enter · i path · Esc back"
-		}
+		return m.menuView(m.menu), true
 	case "form":
 		title = m.form.Title
 		body = fit(clean(m.form.Help), w-4) + "\n"
@@ -375,55 +372,67 @@ func (m *model) nativeView() (string, bool) {
 		if h <= 10 {
 			body = fmt.Sprintf("%s (%d/%d)\n%s\n%s", clean(f.Label), m.form.Index+1, len(m.form.Fields), text.Render(ansi.Cut(value, offset, offset+w-4)), red.Render(fit(m.form.Error, w-4)))
 		}
-		hint = "Tab next · Enter continue · Esc back"
-		if m.form.Index == len(m.form.Fields)-1 {
-			hint = "Enter save · Tab fields · Esc back"
-		}
-	case "confirm":
-		title, body, hint = m.dialog.Title, m.dialog.Body, "y confirm · n / Esc cancel"
-	case "message", "loading":
+	case "confirm", "message", "loading":
 		title, body = m.dialog.Title, m.dialog.Body
-		hint = "↑/↓ scroll · Enter / Esc back"
-		if m.overlay == "loading" {
-			hint = "Esc cancel"
-		}
-		if m.dialog.Retry != nil {
-			hint = "r retry · ↑↓ scroll · Enter / Esc back"
-		}
-		lines := strings.Split(ansi.Hardwrap(body, max(1, w-4), true), "\n")
-		start := min(m.overlayScroll, max(0, len(lines)-max(1, h-4)))
-		body = strings.Join(lines[start:min(len(lines), start+max(1, h-4))], "\n")
+		lines := strings.Split(ansi.Wrap(body, max(1, w-4), ""), "\n")
+		start := min(m.overlayScroll, max(0, len(lines)-capacity))
+		body = strings.Join(lines[start:min(len(lines), start+capacity)], "\n")
 	case "action":
 		title = m.action + " · " + m.spinner() + " running"
 		end := max(0, len(m.output)-m.scroll)
-		body = strings.Join(m.output[max(0, end-max(1, h-4)):end], "\n")
+		body = strings.Join(m.output[max(0, end-capacity):end], "\n")
 		if body == "" {
 			body = "Waiting for output…"
 		}
-		hint = "↑/↓ scroll · Esc cancel · q quit"
 	case "editor":
-		title, hint = "SERVER SETTINGS / JSONC", "Ctrl-S save · Esc discard"
+		title = "SERVER SETTINGS / JSONC"
 		r := m.editor.Text
 		cursor := max(0, min(m.editor.Cursor, len(r)))
 		lines := strings.Split(ansi.Hardwrap(string(r[:cursor])+"▏"+string(r[cursor:]), max(1, w-4), true), "\n")
 		before := ansi.Hardwrap(string(r[:cursor]), max(1, w-4), true)
 		line := strings.Count(before, "\n")
-		start := max(0, line-max(1, h-4)+1)
-		body = strings.Join(lines[start:min(len(lines), start+max(1, h-4))], "\n")
+		start := max(0, line-capacity+1)
+		body = strings.Join(lines[start:min(len(lines), start+capacity)], "\n")
 	default:
 		return "", false
 	}
-	if m.overlay == "confirm" {
-		body = ansi.Hardwrap(body, max(1, w-4), true)
-	}
 	lines := strings.Split(body, "\n")
-	capacity := max(1, h-4)
 	if len(lines) > capacity {
 		lines = lines[:capacity]
 	}
 	for len(lines) < capacity {
 		lines = append(lines, "")
 	}
-	body = strings.Join(lines, "\n") + "\n" + muted.Render(hint)
+	body = strings.Join(lines, "\n")
 	return lipgloss.Place(m.width, max(1, m.height-4), lipgloss.Center, lipgloss.Center, box(strings.ToUpper(title), body, w, h, true)), true
+}
+
+func (m *model) menuView(menu menuState) string {
+	w, h := max(8, min(90, m.width-4)), max(5, m.height-6)
+	width, capacity := max(1, w-4), max(1, h-3)
+	var lines, detail []string
+	if h > 10 && menu.Help != "" {
+		help := strings.Split(ansi.Wrap(safeText(menu.Help), width, ""), "\n")
+		lines = append(lines, help[:min(2, len(help))]...)
+		lines = append(lines, "")
+	}
+	if menu.Index >= 0 && menu.Index < len(menu.Details) && menu.Details[menu.Index] != "" {
+		detail = strings.Split(ansi.Wrap(safeText(menu.Details[menu.Index]), width, ""), "\n")
+		detail = detail[:min(2, len(detail))]
+	}
+	rows := max(1, capacity-len(lines)-len(detail)-1)
+	start := max(0, menu.Index-rows+1)
+	end := min(len(menu.Items), start+rows)
+	for i := start; i < end; i++ {
+		line := fit("  "+clean(menu.Items[i].Title), width)
+		if i == menu.Index {
+			line = selectedStyle.Render(cell("› "+clean(menu.Items[i].Title), width))
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, muted.Render(fmt.Sprintf("%d–%d of %d", min(start+1, end), end, len(menu.Items))))
+	for _, line := range detail {
+		lines = append(lines, text.Render(line))
+	}
+	return lipgloss.Place(m.width, max(1, m.height-4), lipgloss.Center, lipgloss.Center, box(strings.ToUpper(menu.Title), strings.Join(lines, "\n"), w, h, true))
 }

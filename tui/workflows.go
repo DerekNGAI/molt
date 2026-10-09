@@ -42,14 +42,18 @@ func (m *model) openScreen(name string) tea.Cmd {
 			{"Scan / add repositories", func() tea.Cmd { return m.scanForm() }},
 			{"Register a repository by path", func() tea.Cmd { return m.registerForm(m.screen("projects")) }},
 		}
+		details := []string{"Find Git checkouts in your project folder.", "Register an existing Git checkout by its full path."}
 		for _, p := range m.inv.Projects {
 			p := p
-			items = append(items, menuItem{p.Name + " · " + p.Host, func() tea.Cmd { return m.projectMenu(p) }})
+			items = append(items, menuItem{p.Name, func() tea.Cmd { return m.projectMenu(p) }})
+			details = append(details, "VM: "+p.Host+"\nLocal: "+p.Path)
 		}
 		items = append(items, menuItem{"Start all projects", func() tea.Cmd { return m.run("Start all projects", m.screen("projects"), nil, "up") }}, menuItem{"Stop all projects", func() tea.Cmd {
 			return m.confirm("Stop all projects?", "Connected server sessions will be interrupted.", m.screen("projects"), func() tea.Cmd { return m.run("Stop all projects", m.screen("projects"), nil, "down") })
 		}})
-		return m.showMenu("Repositories", "Project folder: "+m.inv.Config["MOLT_ROOT"], m.dashboard, items...)
+		m.showMenu("Repositories", "Project folder: "+m.inv.Config["MOLT_ROOT"], m.dashboard, items...)
+		m.menu.Details = append(details, "Start every registered workspace.", "Stop all workspaces and flush synchronization. Confirmation required.")
+		return nil
 	case "connections":
 		items := []menuItem{
 			{"Add a connection", func() tea.Cmd { return m.connectionForm("") }},
@@ -68,19 +72,29 @@ func (m *model) openScreen(name string) tea.Cmd {
 		return m.showMenu("Guided setup", "Connect your VM, choose folders, and prepare Docker.", m.dashboard, items...)
 	case "opencode":
 		var items []menuItem
+		var details []string
 		for _, p := range m.inv.Projects {
 			p := p
-			items = append(items, menuItem{p.Name + " · " + p.Host, func() tea.Cmd { return m.opencodeMenu(p) }})
+			items = append(items, menuItem{p.Name, func() tea.Cmd { return m.opencodeMenu(p) }})
+			details = append(details, "VM: "+p.Host+"\nLocal: "+p.Path)
 		}
 		if len(items) == 0 {
 			items = append(items, menuItem{"Register a repository first", m.screen("projects")})
 		}
-		return m.showMenu("OpenCode projects", "Providers and settings are shared by projects on the same VM workspace.", m.dashboard, items...)
+		m.showMenu("OpenCode projects", "Providers and settings are shared by projects on the same VM workspace.", m.dashboard, items...)
+		m.menu.Details = details
+		return nil
 	case "settings":
 		items := []menuItem{}
+		var details []string
 		for _, entry := range [][2]string{{"Project folder", "MOLT_ROOT"}, {"Remote workspace", "MOLT_REMOTE_HOME"}, {"OpenCode base port", "MOLT_OPENCODE_BASE_PORT"}, {"SSH configuration file", "MOLT_SSH_CONFIG"}} {
 			label, key := entry[0], entry[1]
-			items = append(items, menuItem{label + ": " + m.inv.Config[key], func() tea.Cmd { return m.settingForm(label, key) }})
+			items = append(items, menuItem{label, func() tea.Cmd { return m.settingForm(label, key) }})
+			value := m.inv.Config[key]
+			if value == "" {
+				value = "Not configured"
+			}
+			details = append(details, "Current value: "+value)
 		}
 		on := "Off"
 		if m.inv.Config["MOLT_ANIMATIONS"] != "0" {
@@ -97,7 +111,9 @@ func (m *model) openScreen(name string) tea.Cmd {
 				return m.openScreen("settings")
 			}, "config", "set", "MOLT_ANIMATIONS", value)
 		}}, menuItem{"Shell activation", m.shellMenu})
-		return m.showMenu("Settings", "Preferences are saved in this installation.", m.dashboard, items...)
+		m.showMenu("Settings", "Preferences are saved in this installation.", m.dashboard, items...)
+		m.menu.Details = append(details, "Press Enter to turn animations on or off.", "Enable or disable MOLT commands in new Zsh terminals.")
+		return nil
 	case "maintenance":
 		return m.maintenanceMenu()
 	case "uninstall":
@@ -153,7 +169,7 @@ func (m *model) projectMenu(p project) tea.Cmd {
 	}
 	items = append(items, menuItem{"Remove project", func() tea.Cmd { return m.removeProjectMenu(p) }})
 	items = append(items, menuItem{"Server logs", func() tea.Cmd { return m.run("Server logs", returnTo, nil, "logs", "@"+p.ID) }}, menuItem{"Synchronization", func() tea.Cmd { return m.run("Synchronization", returnTo, nil, "sync", "@"+p.ID) }}, menuItem{"Providers and settings", func() tea.Cmd { return m.opencodeMenu(p) }})
-	return m.showMenu(p.Name, p.Path+" · "+p.Host, m.screen("projects"), items...)
+	return m.showMenu(p.Name, "VM: "+p.Host+"\nLocal: "+p.Path, m.screen("projects"), items...)
 }
 
 func (m *model) removeProjectMenu(p project) tea.Cmd {
@@ -208,19 +224,23 @@ func (m *model) connectionForm(alias string) tea.Cmd {
 func (m *model) aliases() tea.Cmd {
 	return m.fetch("Existing SSH aliases", m.screen("connections"), func(data []byte) tea.Cmd {
 		var items []menuItem
+		var details []string
 		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 			alias, detail, ok := strings.Cut(line, "\t")
 			if !ok {
 				continue
 			}
-			items = append(items, menuItem{alias + " · " + detail, func() tea.Cmd {
+			items = append(items, menuItem{alias, func() tea.Cmd {
 				return m.run("Select connection", m.aliases, func() tea.Cmd { m.inv.Config["MOLT_HOST"] = alias; return m.connectionMenu(alias) }, "connection", "use", alias)
 			}})
+			details = append(details, "Destination: "+detail)
 		}
 		if len(items) == 0 {
 			items = append(items, menuItem{"No aliases found · add a connection", func() tea.Cmd { return m.connectionForm("") }})
 		}
-		return m.showMenu("Existing SSH aliases", "Resolved username, destination, and port.", m.screen("connections"), items...)
+		m.showMenu("Existing SSH aliases", "Select an alias to see its destination.", m.screen("connections"), items...)
+		m.menu.Details = details
+		return nil
 	}, "connection", "aliases")
 }
 func (m *model) connectionMenu(alias string) tea.Cmd {
@@ -347,7 +367,7 @@ func (m *model) editServer(p project) tea.Cmd {
 
 func (m *model) maintenanceMenu() tea.Cmd {
 	returnTo := m.screen("maintenance")
-	return m.showMenu("Maintenance", "Manage this installation and its recorded resources.", m.dashboard,
+	m.showMenu("Maintenance", "Manage this installation and its recorded resources.", m.dashboard,
 		menuItem{"Tool versions", func() tea.Cmd { return m.run("Tool versions", returnTo, nil, "tools") }},
 		menuItem{"Diagnostics", func() tea.Cmd { return m.run("Diagnostics", returnTo, nil, "doctor") }},
 		menuItem{"Prepare / repair VM", func() tea.Cmd { return m.prepareVM(returnTo, nil) }},
@@ -357,11 +377,11 @@ func (m *model) maintenanceMenu() tea.Cmd {
 				return m.runProgram("Reset all projects", returnTo, nil, "env", "MOLT_ASSUME_YES=1", m.b.CLI, "reset", "--all")
 			})
 		}},
-		menuItem{"Remove empty remote workspaces", func() tea.Cmd {
+		menuItem{"Clean empty VM workspaces", func() tea.Cmd {
 			return m.confirm("Remove remote workspaces?", "Remove recorded empty workspace roots from the VMs.", returnTo, func() tea.Cmd { return m.run("Remove remote workspaces", returnTo, nil, "remove-remote-roots") })
 		}},
-		menuItem{"Repair this installation", func() tea.Cmd { return m.installFrom(filepath.Join(m.b.Home, "current"), returnTo) }},
-		menuItem{"Upgrade from a checkout", func() tea.Cmd {
+		menuItem{"Repair installation", func() tea.Cmd { return m.installFrom(filepath.Join(m.b.Home, "current"), returnTo) }},
+		menuItem{"Upgrade from checkout", func() tea.Cmd {
 			return m.showForm("Upgrade MOLT", "Select a MOLT source checkout.", returnTo, func(v []string) tea.Cmd {
 				source := localPath(v[0])
 				if _, err := os.Stat(filepath.Join(source, "tools.lock")); err != nil {
@@ -371,14 +391,26 @@ func (m *model) maintenanceMenu() tea.Cmd {
 				return m.confirm("Upgrade MOLT?", "Install from "+source+".", returnTo, func() tea.Cmd { return m.installFrom(source, returnTo) })
 			}, formField{Label: "Source checkout", Value: localPath("~")})
 		}},
-		menuItem{"Open installation folder in Finder", func() tea.Cmd { return m.runProgram("Open Finder", returnTo, nil, "open", m.b.Home) }})
+		menuItem{"Open installation folder", func() tea.Cmd { return m.runProgram("Open Finder", returnTo, nil, "open", m.b.Home) }})
+	m.menu.Details = []string{
+		"Show the installed MOLT, Mutagen, and OpenCode versions.",
+		"Check VM connectivity and workspace health.",
+		"Prepare Docker and repair the owned VM workspace.",
+		"Stop the local SSH and synchronization helpers.",
+		"Remove all owned project resources. Mac checkouts are kept. Confirmation required.",
+		"Remove recorded empty workspace roots from the VMs. Confirmation required.",
+		"Reinstall from the current installation's source.",
+		"Choose a MOLT source checkout to install an upgrade.",
+		"Open in Finder: " + m.b.Home,
+	}
+	return nil
 }
 func (m *model) installFrom(source string, returnTo func() tea.Cmd) tea.Cmd {
 	return m.runProgram("Install MOLT", returnTo, nil, "/bin/bash", filepath.Join(source, "install.sh"), "--non-interactive")
 }
 func (m *model) uninstallMenu() tea.Cmd {
 	returnTo := m.screen("uninstall")
-	return m.showMenu("Uninstall", "Mac checkouts are kept. Cleanup failures retain retry records.", m.dashboard,
+	m.showMenu("Uninstall", "Mac checkouts are kept. Cleanup failures retain retry records.", m.dashboard,
 		menuItem{"Preview cleanup inventory", func() tea.Cmd {
 			return m.fetch("Cleanup inventory", returnTo, func(data []byte) tea.Cmd {
 				value := strings.TrimSpace(string(data))
@@ -388,9 +420,16 @@ func (m *model) uninstallMenu() tea.Cmd {
 				return m.showMessage("Cleanup inventory", value, returnTo)
 			}, "cleanup-inventory")
 		}},
-		menuItem{"Remove MOLT and remote resources", func() tea.Cmd { return m.confirmUninstall(false, false) }},
-		menuItem{"Also undo recorded Docker preparation", func() tea.Cmd { return m.confirmUninstall(false, true) }},
-		menuItem{"Remove this Mac installation only", func() tea.Cmd { return m.confirmUninstall(true, false) }})
+		menuItem{"Remove MOLT and VM resources", func() tea.Cmd { return m.confirmUninstall(false, false) }},
+		menuItem{"Also undo Docker preparation", func() tea.Cmd { return m.confirmUninstall(false, true) }},
+		menuItem{"Remove Mac installation only", func() tea.Cmd { return m.confirmUninstall(true, false) }})
+	m.menu.Details = []string{
+		"Review the recorded resources before choosing a removal option.",
+		"Remove this installation and its owned VM resources. Mac checkouts are kept.",
+		"Remove MOLT and VM resources, and undo MOLT-recorded Docker preparation when safe.",
+		"Remove only the Mac installation. VM resources may remain running when VM changes are recorded.",
+	}
+	return nil
 }
 func (m *model) confirmUninstall(localOnly, undo bool) tea.Cmd {
 	args := []string{"--yes"}

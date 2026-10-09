@@ -36,7 +36,7 @@ func TestFocusAndHelpRemainVisibleWithoutColor(t *testing.T) {
 	m := newModel(backend{Context: context.Background()})
 	m.width, m.height = 70, 24
 	m.overlay = "help"
-	if !strings.Contains(m.View(), "Esc  close") {
+	if !strings.Contains(m.View(), "Esc close") {
 		t.Fatal("narrow help lost closing instruction")
 	}
 	m.overlay = ""
@@ -212,7 +212,7 @@ func TestLocalUninstallWarnsWithoutSavingAFile(t *testing.T) {
 		m := newModel(backend{Context: context.Background()})
 		m.uninstallMenu()
 		for _, item := range m.menu.Items {
-			if item.Title == "Remove this Mac installation only" {
+			if item.Title == "Remove Mac installation only" {
 				item.Run()
 				break
 			}

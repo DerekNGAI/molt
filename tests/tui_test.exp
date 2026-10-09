@@ -19,6 +19,19 @@ spawn -noecho /bin/bash "$env(TUI_ROOT)/tests/terminal_check.sh" /bin/bash "$env
 stty rows 32 columns 100 < $spawn_out(slave,name)
 see "control center"
 see "WORKSPACES"
+# Help is grouped and command descriptions stay accessible.
+send -- "?"
+see "NAVIGATION"
+see "Esc"
+escape
+send -- ":"
+see "COMMANDS"
+see "Scan, register, and manage"
+send -- "i"
+see "DETAILS"
+escape
+see "COMMANDS"
+escape
 # Scanning stays in Bubble Tea and registers the selected real Git checkout.
 palette 0
 see "REPOSITORIES"
@@ -43,14 +56,15 @@ down 1
 enter
 see "EXISTING SSH ALIASES"
 see "ubuntu@vm.example:22"
+down 1
 see "developer@alternate.example:2222"
 escape
 see "CONNECTIONS"
 down 1
 enter
 see "EXISTING SSH ALIASES"
-see "developer@alternate.example:2222"
 down 1
+see "developer@alternate.example:2222"
 enter
 see "CONNECTION / ALTERNATE-VM"
 if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_HOST] != "alternate-vm"} { puts stderr "FAIL: alias selection was not saved"; exit 1 }

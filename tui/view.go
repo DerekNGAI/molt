@@ -27,9 +27,11 @@ type dimensions struct {
 
 func (m *model) layout() dimensions {
 	available := max(1, m.height-4)
-	if m.width < 50 || m.height < 19 {
+	if m.width < 50 || m.height < 24 {
 		return dimensions{projects: available, compact: true}
 	}
+	// The three panels also need two separator rows above the footer.
+	available = max(1, m.height-6)
 	top := 12
 	if m.height < 30 {
 		top = 8
@@ -372,21 +374,15 @@ func (m *model) overlayView() string {
 	}
 	switch m.overlay {
 	case "help":
-		title = "KEYBOARD / Vim at home"
-		body = "h/l · Tab    switch panels     j/k · ↑/↓  move / scroll\n1–4           focus panel       [ / ]      select VM\ng / G         first / last      Ctrl-d/u   page down / up\n/             filter projects   Enter      project detail\ns             start project     S          stop (confirm)\nr             restart (confirm) o          attach OpenCode\nL             live server logs  a          activity feed\ny             sync / conflicts  d          diagnostics\nc             connect VM        n          register a repo\n: · Ctrl-p    command palette   m          management menu\nR             refresh now       p          pause polling\nEsc           back / cancel     q · Ctrl-c quit\nCtrl-]        embedded session controls\n\nMouse: click to focus/select · wheel to move/scroll\nAnimations follow Settings → Animations and NO_COLOR.\n\nEnter / Esc  close"
-		if m.height < 30 {
-			body = "h/l · Tab  panels        j/k · ↑/↓  move / scroll\n1–4 focus · [ / ] VM · g/G first/last · Ctrl-d/u page\n/ filter · Enter detail · s start · S stop · r restart\no OpenCode · L logs · a activity · y sync · d doctor\nc connect · n register · : commands · m manage\nR refresh · p pause · q quit · Esc back / cancel\n\nMouse: click / wheel · motion: Settings → Animations\n\nEnter / Esc  close"
-		}
+		title = "KEYBOARD / help"
+		body = keyboardHelp()
 	case "palette":
-		title = "COMMANDS / all of MOLT"
-		for i, item := range palette() {
-			line := "  " + item.Title
-			if i == m.paletteIndex {
-				line = selectedStyle.Render("› " + item.Title)
-			}
-			body += line + "\n"
+		menu := menuState{Title: "Commands", Help: "Choose a task. Details appear below the list.", Index: m.paletteIndex}
+		for _, item := range palette() {
+			menu.Items = append(menu.Items, menuItem{Title: item.Title})
+			menu.Details = append(menu.Details, item.Description)
 		}
-		body += "\nj/k  choose · Enter  open · Esc  close"
+		return m.menuView(menu)
 	case "detail":
 		title = "WORKSPACE / " + clean(p.Name)
 		body = "Local      " + clean(p.Path) + "\nVM         " + clean(p.Host) + "\nContainer  " + clean(p.Container) + "\nRuntime    " + p.runtime(m.remotes[p.Host]) + "\nServer     " + p.health(m.remotes[p.Host]) + "\nPort       " + clean(p.Port) + "\nSync       " + clean(p.Sync)
@@ -397,39 +393,36 @@ func (m *model) overlayView() string {
 			}
 			body += fmt.Sprintf("\nConflicts  %d", len(s.Conflicts))
 		}
-		body += "\n\nEnter / Esc  close · y  from dashboard shows sync details"
 	case "stop":
 		title = "STOP WORKSPACE"
-		body = "Stop " + clean(p.Name) + " and flush synchronization?\n\n" + amber.Render("The server session will be interrupted.") + "\n\ny  stop · n / Esc  keep running"
+		body = "Stop " + clean(p.Name) + " and flush synchronization?\n\n" + amber.Render("The server session will be interrupted.")
 	case "restart":
 		title = "RESTART WORKSPACE"
-		body = "Stop and restart " + clean(p.Name) + "?\n\n" + amber.Render("The server session will be interrupted.") + "\n\ny  restart · n / Esc  cancel"
+		body = "Stop and restart " + clean(p.Name) + "?\n\n" + amber.Render("The server session will be interrupted.")
 	case "down":
 		title = "STOP ALL WORKSPACES"
-		body = "Stop every registered server and flush synchronization?\n\n" + amber.Render("Connected server sessions will be interrupted.") + "\n\ny  stop all · n / Esc  cancel"
+		body = "Stop every registered server and flush synchronization?\n\n" + amber.Render("Connected server sessions will be interrupted.")
 	case "quit", "cancel":
 		title = "ACTION IN PROGRESS"
 		body = clean(m.action) + "\n\nCancel this action"
 		if m.overlay == "quit" {
 			body += " and quit"
 		}
-		body += "?\n\nPartial work and recovery records are retained.\n\ny  cancel action · n / Esc  continue"
+		body += "?\n\nPartial work and recovery records are retained."
 	}
 	w := min(78, max(20, m.width-4))
+	body = ansi.Wrap(body, max(1, w-4), "")
 	h := min(max(5, m.height-6), len(strings.Split(body, "\n"))+4)
 	lines := strings.Split(body, "\n")
 	capacity := max(1, h-3)
 	if len(lines) > capacity {
 		visible := max(1, capacity-1)
 		start := 0
-		hint := lines[len(lines)-1]
+		hint := "↑↓ scroll for more"
 		switch m.overlay {
-		case "palette":
-			start = max(0, m.paletteIndex-visible+1)
-			hint = "j/k choose · Enter open · Esc close"
-		case "help", "detail":
+		case "help", "detail", "stop", "restart", "down", "quit", "cancel":
 			start = min(m.overlayScroll, max(0, len(lines)-visible))
-			hint = "j/k scroll · Esc  close"
+			hint = fmt.Sprintf("%d–%d of %d · ↑↓ scroll", start+1, min(len(lines), start+visible), len(lines))
 		}
 		body = strings.Join(lines[start:min(len(lines), start+visible)], "\n") + "\n" + muted.Render(hint)
 	}
@@ -468,22 +461,13 @@ func (m *model) View() string {
 	} else {
 		content = m.topView(l) + "\n" + m.projectView(l) + "\n" + m.activityView(l)
 	}
-	foot := muted.Render(" h/l panels · j/k move · / filter · L logs · : commands · ? help · q quit")
-	if m.searching {
-		foot = accent.Render(" /" + clean(m.query) + "▏  Enter apply · Esc clear")
-	}
-	if m.focus == 3 {
-		foot = muted.Render(" j/k scroll · G follow latest · a activity · L logs · Esc cancel action · : commands")
-	}
-	if m.overlay == "session" {
-		foot = accent.Render(" Keys go to session · Ctrl-] session controls")
-	}
+	foot := m.footer(w)
 	path := m.current().Path
 	if path == "" {
 		path = m.b.Home
 	}
 	if m.action != "" {
-		path = "Esc · cancel running action"
+		path = m.action + " · running"
 	}
 	view := header + "\n" + content + "\n" + cell(fit(foot, w), w) + "\n" + muted.Render(cell(" "+clean(path), w))
 	// A resize can arrive between layout and drawing; clip in terminal cells.
@@ -495,4 +479,112 @@ func (m *model) View() string {
 		lines[i] = fit(lines[i], w)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func keyboardHelp() string {
+	row := func(key, action string) string { return accent.Render(cell(key, 14)) + " " + text.Render(action) }
+	return strings.Join([]string{
+		accent.Bold(true).Render("NAVIGATION"),
+		row("Tab · h/l", "Switch panels"),
+		row("Shift-Tab", "Previous panel"),
+		row("1–4", "Focus a panel"),
+		row("↑↓ · j/k", "Move or scroll"),
+		row("g / G", "First / last"),
+		row("Ctrl-D/U", "Page down / up"),
+		row("[ / ]", "Select VM"),
+		row("Esc", "Back / cancel"),
+		"", accent.Bold(true).Render("WORKSPACES"),
+		row("/", "Filter projects"),
+		row("Enter", "Project details"),
+		row("o", "Attach OpenCode"),
+		row("s", "Start project"),
+		row("S", "Stop (confirm)"),
+		row("r", "Restart (confirm)"),
+		row("n", "Register a repo"),
+		"", accent.Bold(true).Render("MONITORING"),
+		row("L", "Live server logs"),
+		row("a", "Activity feed"),
+		row("y", "Sync / conflicts"),
+		row("d", "Diagnostics"),
+		row("R", "Refresh now"),
+		row("p", "Pause / resume"),
+		"", accent.Bold(true).Render("COMMANDS & SESSIONS"),
+		row(": · Ctrl-P · m", "Commands"),
+		row("i in a menu", "Full item details"),
+		row("c", "Connect VM"),
+		row("Ctrl-]", "Session controls"),
+		row("q · Ctrl-C", "Quit dashboard"),
+		"", muted.Render("Mouse: click to focus/select; wheel to move/scroll."),
+		muted.Render("Motion: Settings → Animations; NO_COLOR disables it."),
+	}, "\n")
+}
+
+func (m *model) footer(width int) string {
+	var items []string
+	switch {
+	case m.searching:
+		items = []string{"Enter apply", "Esc clear"}
+	case m.overlay == "palette" || m.overlay == "native-menu":
+		items = []string{"Enter open", "Esc back", "↑↓ move"}
+		if m.overlay == "palette" || len(m.menu.Details) > 0 {
+			items = append(items, "i info")
+		}
+	case m.overlay == "help" || m.overlay == "detail":
+		items = []string{"Esc close", "↑↓ scroll", "Ctrl-D/U page", "Enter close"}
+	case m.overlay == "message":
+		items = []string{"Esc back", "↑↓ scroll", "Enter back"}
+		if m.dialog.Retry != nil {
+			items = []string{"Esc back", "r retry", "↑↓ scroll", "Enter back"}
+		}
+	case m.overlay == "loading":
+		items = []string{"Esc cancel"}
+	case m.overlay == "form":
+		items = []string{"Enter continue", "Esc back", "Tab fields"}
+		if m.form.Index == len(m.form.Fields)-1 {
+			items[0] = "Enter save"
+		}
+	case m.overlay == "editor":
+		items = []string{"Ctrl-S save", "Esc discard"}
+	case m.overlay == "session":
+		items = []string{"Ctrl-] session controls", "Keys go to session"}
+	case m.overlay == "confirm" || m.overlay == "stop" || m.overlay == "restart" || m.overlay == "down" || m.overlay == "quit" || m.overlay == "cancel":
+		items = []string{"n/Esc cancel", "y confirm", "↑↓ scroll"}
+	case m.overlay == "action":
+		items = []string{"Esc cancel", "↑↓ scroll", "q quit"}
+	default:
+		items = []string{": commands", "? help"}
+		if m.action != "" {
+			items = append(items, "Esc cancel")
+		}
+		switch m.focus {
+		case 0:
+			items = append(items, "c connect", "[/] VM", "↑↓ select VM")
+		case 1:
+			items = append(items, "R refresh", "p pause")
+		case 2:
+			if m.current().ID == "" {
+				items = append(items, "n add repo", "/ filter")
+			} else {
+				items = append(items, "Enter details", "o OpenCode", "/ filter")
+			}
+		case 3:
+			items = append(items, "↑↓ scroll", "G follow", "a activity")
+		}
+		items = append(items, "q quit", "Tab panels")
+	}
+	var parts []string
+	used := 1
+	for _, item := range items {
+		n := lipgloss.Width(item)
+		if len(parts) > 0 {
+			n += 3
+		}
+		if used+n > width {
+			continue
+		}
+		key, action, _ := strings.Cut(item, " ")
+		parts = append(parts, accent.Bold(true).Render(key)+" "+muted.Render(action))
+		used += n
+	}
+	return " " + strings.Join(parts, muted.Render(" · "))
 }

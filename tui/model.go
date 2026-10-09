@@ -554,6 +554,7 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 	if m.overlay != "" {
 		return m.overlayKey(msg)
 	}
+	m.overlayScroll = 0
 	switch k {
 	case "q", "ctrl+c":
 		if m.action != "" {
@@ -665,23 +666,23 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 }
 
 type paletteItem struct {
-	Title       string
-	Args        []string
-	Interactive bool
+	Title, Description string
+	Args               []string
+	Interactive        bool
 }
 
 func palette() []paletteItem {
 	return []paletteItem{
-		{"Add / scan repositories", []string{"projects"}, true},
-		{"Connections · profiles and SSH keys", []string{"connections"}, true},
-		{"Guided setup · prepare a VM", []string{"setup"}, true},
-		{"OpenCode · providers and server settings", []string{"opencode"}, true},
-		{"Settings · folders, ports, animations", []string{"settings"}, true},
-		{"Maintenance · repair, upgrade, cleanup", []string{"maintenance"}, true},
-		{"Tool versions", []string{"tools"}, false},
-		{"Start all projects", []string{"up"}, false},
-		{"Stop all projects", []string{"down"}, false},
-		{"Uninstall MOLT", []string{"uninstall"}, true},
+		{"Repositories", "Scan, register, and manage your Git repositories.", []string{"projects"}, true},
+		{"Connections", "Manage VM connections, SSH profiles, and keys.", []string{"connections"}, true},
+		{"Guided setup", "Connect a VM, choose folders, and prepare Docker.", []string{"setup"}, true},
+		{"OpenCode", "Attach to a project, manage providers, and edit server settings.", []string{"opencode"}, true},
+		{"Settings", "Choose folders, ports, animations, and shell activation.", []string{"settings"}, true},
+		{"Maintenance", "Check diagnostics, repair, upgrade, and clean up resources.", []string{"maintenance"}, true},
+		{"Tool versions", "Show the installed MOLT, Mutagen, and OpenCode versions.", []string{"tools"}, false},
+		{"Start all projects", "Start every registered workspace.", []string{"up"}, false},
+		{"Stop all projects", "Stop all workspaces and flush synchronization. Confirmation required.", []string{"down"}, false},
+		{"Uninstall MOLT", "Review cleanup and choose how to remove this installation.", []string{"uninstall"}, true},
 	}
 }
 
@@ -715,10 +716,18 @@ func (m *model) overlayKey(msg tea.KeyMsg) tea.Cmd {
 			m.paletteIndex = min(len(palette())-1, m.paletteIndex+1)
 		case "k", "up":
 			m.paletteIndex = max(0, m.paletteIndex-1)
+		case "home", "g":
+			m.paletteIndex = 0
+		case "end", "G":
+			m.paletteIndex = len(palette()) - 1
+		case "i":
+			index := m.paletteIndex
+			item := palette()[index]
+			return m.showMessage("Details / "+item.Title, item.Description, func() tea.Cmd { m.overlay, m.paletteIndex = "palette", index; return nil })
 		case "enter":
 			item := palette()[m.paletteIndex]
-			if item.Title == "Stop all projects" {
-				m.overlay = "down"
+			if item.Args[0] == "down" {
+				m.overlay, m.overlayScroll = "down", 0
 				return nil
 			}
 			m.overlay = ""
@@ -728,6 +737,16 @@ func (m *model) overlayKey(msg tea.KeyMsg) tea.Cmd {
 			return m.startAction(item.Title, item.Args...)
 		}
 	default:
+		switch k {
+		case "j", "down":
+			m.overlayScroll++
+		case "k", "up":
+			m.overlayScroll = max(0, m.overlayScroll-1)
+		case "ctrl+d", "pgdown":
+			m.overlayScroll += 5
+		case "ctrl+u", "pgup":
+			m.overlayScroll = max(0, m.overlayScroll-5)
+		}
 		if k != "y" {
 			if k == "n" {
 				m.overlay = ""
