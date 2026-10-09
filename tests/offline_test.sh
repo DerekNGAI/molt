@@ -46,12 +46,19 @@ if [[ "${!#}" == --hold ]]; then
 fi
 printf 'local client\n'
 CLIENT
+cat >"$TMP/tools/molt-tui" <<'CLIENT'
+#!/usr/bin/env bash
+while [[ "$1" != -- ]]; do shift; done
+shift
+exec "$@"
+CLIENT
 chmod +x "$TMP/tools/"*
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 fixture() {
   export MOLT_HOME="$TMP/$1" TEST_OFFLINE=1 TEST_FAIL_REMOTE='' TEST_FAIL_SYNC=0 TEST_REJECT_FLUSH=0
   mkdir -p "$MOLT_HOME/releases/test/bin" "$MOLT_HOME/state/tmp" "$TMP/$1-repo"
   cp "$ROOT/bin/"*.sh "$ROOT/bin/molt" "$MOLT_HOME/releases/test/bin/"
+  cp "$TMP/tools/molt-tui" "$MOLT_HOME/releases/test/bin/"
   cp "$ROOT/uninstall.sh" "$MOLT_HOME/releases/test/bin/molt-uninstall"
   cp "$ROOT/tools.lock" "$MOLT_HOME/releases/test/tools.lock"
   ln -s releases/test/bin "$MOLT_HOME/bin"

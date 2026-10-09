@@ -274,36 +274,15 @@ cmd_sync() {
   mutagen sync list "$PROJECT_SYNC"
 }
 cmd_start() (
-  local path work lock previous attempt acquired=0
+  local path
   path="$(repo_root "${1:-.}")"
   molt_owned_home || die 'install molt before starting a project'
   register_project "$path"
+  with_project_setup_lock start_loaded_project
+)
+start_loaded_project() {
+  local path="$PROJECT_PATH" work="$PROJECT_SETUP_WORK"
   [[ "$PROJECT_LAYOUT" == 2 ]] || die 'reset this legacy project before starting it with the contained layout'
-  lock="$PROJECT_STATE/start.lock"
-  managed_file "$lock"
-  for attempt in {1..300}; do
-    if mkdir "$lock" 2>/dev/null; then acquired=1; break; fi
-    previous="$(read_value "$lock/pid" 2>/dev/null || true)"
-    if [[ "$previous" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$previous" 2>/dev/null; then rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true; fi
-    sleep 0.1
-  done
-  [[ "$acquired" == 1 ]] || die 'another project startup is still running; retry shortly'
-  write_value "$lock/pid" "$$"
-  work="$(mktemp -d "$MOLT_HOME/state/tmp/start.XXXXXX")"
-  start_cleanup() {
-    local rc=$?
-    trap - EXIT
-    rm -rf -- "$work"
-    rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true
-    if [[ "$rc" != 0 ]]; then log 'startup failed; owned resources and retry records retained'; fi
-    exit "$rc"
-  }
-  trap start_cleanup EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  printf '%s\n' "$$" >"$work/parent.pid"
-  printf '%s\n' "$0" >"$work/script"
-  write_value "$work/project" "$PROJECT_ID"
   cmd_setup
   load_project "$path" || die 'could not load project state'
   set_remote_paths
@@ -323,7 +302,7 @@ cmd_start() (
   PROJECT_SETUP_STATE=complete
   save_project
   log "$PROJECT_NAME is ready — OpenCode on $MOLT_HOST"
-)
+}
 stop_loaded_project() {
   local running owner sessions
   [[ "$PROJECT_ACTIVE" == 1 || -n "$PROJECT_REMOTE_PATH" ]] || return 0

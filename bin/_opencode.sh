@@ -73,8 +73,7 @@ cancel_project_forwards() {
 }
 forward_opencode_port() {
   local port="$PROJECT_OPENCODE_PORT" status
-  # Reusing an existing listener can attach to the wrong repository. Recreate our tunnel.
-  cancel_project_forwards
+  # The SSH master reuses an identical forward and rejects another owner's listener.
   ssh -O forward -L "127.0.0.1:${port}:127.0.0.1:${port}" "$MOLT_HOST" >/dev/null 2>&1 || die "could not forward OpenCode on localhost:$port; check for another listener"
   write_value "$PROJECT_STATE/forwards" "$port"
   status="$(curl -q --noproxy '*' --max-time 3 --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$port/global/health" || true)"
@@ -89,21 +88,29 @@ load_password() {
   export OPENCODE_SERVER_PASSWORD
 }
 cmd_client() {
-  local tmp client_pid='' rc=0
+  local tmp binary client_pid='' rc=0
   molt_state
   tmp="$(mktemp -d "$MOLT_HOME/state/tmp/client.XXXXXX")"
   trap 'if [[ -n "$client_pid" ]]; then molt_kill_tree "$client_pid"; wait "$client_pid" 2>/dev/null || true; fi; rm -rf -- "$tmp"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  trap 'exit 129' HUP
   printf '%s\n' "$$" >"$tmp/parent.pid"
   printf '%s\n' "$0" >"$tmp/script"
   if [[ -n "${PROJECT_ID:-}" ]]; then write_value "$tmp/project" "$PROJECT_ID"; fi
   # An interruptible wait lets uninstall stop the client even during process startup.
-  molt_client "$@" <&0 &
+  if [[ -n "${MOLT_CLIENT_UPSTREAM:-}" ]]; then
+    managed_file "$PROJECT_STATE/sessions"
+    binary="$(molt_value "$MOLT_HOME/.install-manifest" OPENCODE_BINARY)" || return 1
+    "$SCRIPT_DIR/molt-tui" attach-client --upstream "$MOLT_CLIENT_UPSTREAM" --directory "$MOLT_CLIENT_DIRECTORY" \
+      --sessions "$PROJECT_STATE/sessions" -- "$binary" "$@" <&0 &
+  else
+    molt_client "$@" <&0 &
+  fi
   client_pid=$!
   wait "$client_pid" || rc=$?
   rm -rf -- "$tmp"
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM HUP
   return "$rc"
 }
 cmd_oc() {
@@ -119,7 +126,8 @@ attach_loaded_project() {
   shift
   ensure_project_container
   load_password
-  cmd_client attach "http://127.0.0.1:$PROJECT_OPENCODE_PORT" --dir "$directory" "$@" || rc=$?
+  MOLT_CLIENT_UPSTREAM="http://127.0.0.1:$PROJECT_OPENCODE_PORT" MOLT_CLIENT_DIRECTORY="$directory" \
+    cmd_client attach "http://127.0.0.1:$PROJECT_OPENCODE_PORT" --dir "$directory" "$@" || rc=$?
   # Bring the final server edits home even when the client exits with an error.
   flush_project_sync || { log 'could not flush final changes; sync remains running'; [[ "$rc" != 0 ]] || rc=1; }
   return "$rc"

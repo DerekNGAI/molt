@@ -231,7 +231,8 @@ prepare_update() {
   export UPDATE_SOURCE="$TMP/update-source" UPDATE_RECORD="$TMP/update-source-path" UPDATE_STARTED="$TMP/update-started"
   mkdir -p "$UPDATE_SOURCE"
   cp -R "$ROOT/bin" "$ROOT/shims" "$ROOT/remote" "$ROOT/tui" "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/config.example" "$ROOT/tools.lock" "$UPDATE_SOURCE/"
-  rm -f "$UPDATE_SOURCE/bin/molt-tui"
+  printf '#!/usr/bin/env bash\nprintf "stale TUI fixture\\n"\n' >"$UPDATE_SOURCE/bin/molt-tui"
+  chmod +x "$UPDATE_SOURCE/bin/molt-tui"
   cat >"$TMP/bin/git" <<'GIT'
 #!/usr/bin/env bash
 if [[ "$*" == '-c credential.interactive=false clone --depth 1 --single-branch --branch main https://github.com/DerekNGAI/molt.git '* ]]; then
@@ -259,6 +260,22 @@ chmod +x ../bin/molt-tui
 GO
   chmod +x "$TMP/bin/git" "$TMP/bin/go"
 }
+
+test_source_install_rebuilds_tui() (
+  prepare_update
+  unset MOLT_TUI_BINARY
+  /bin/bash "$UPDATE_SOURCE/install.sh" --non-interactive >"$TMP/source-install.log" 2>&1 || { cat "$TMP/source-install.log"; fail 'source installation failed'; }
+  [[ "$("$MOLT_HOME/bin/molt-tui")" == 'updated TUI fixture' ]] || fail 'source installer reused a stale executable instead of building current sources'
+  local original="$(readlink "$MOLT_HOME/current")"
+  mkdir "$UPDATE_SOURCE/.git"
+  if PATH=/usr/bin:/bin /bin/bash "$UPDATE_SOURCE/install.sh" --non-interactive >"$TMP/source-install.log" 2>&1; then fail 'Git checkout without Go silently reused a stale executable'; fi
+  [[ "$(readlink "$MOLT_HOME/current")" == "$original" ]] || fail 'missing compiler replaced the working installation'
+  grep -Fq 'install Go 1.26 or supply MOLT_TUI_BINARY' "$TMP/source-install.log" || fail 'missing compiler was not explained'
+  rmdir "$UPDATE_SOURCE/.git"
+  PATH=/usr/bin:/bin /bin/bash "$UPDATE_SOURCE/install.sh" --non-interactive >"$TMP/source-install.log" 2>&1 || fail 'packaged executable unnecessarily required Go'
+  [[ "$("$MOLT_HOME/bin/molt-tui")" == 'stale TUI fixture' ]] || fail 'package installation did not retain its supplied executable'
+  rm -f "$TMP/bin/git" "$TMP/bin/go"
+)
 
 update_daemon_fixture() {
   cat >"$TMP/bin/mutagen" <<'MUTAGEN'
@@ -391,7 +408,7 @@ test_ssh_paths() (
   [[ "$output" == *"$expected"* ]] || fail 'SSH interpreted spaces/percent tokens instead of the contained known-hosts path'
 )
 
-for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_install_repair test_native_install test_install_options test_update test_update_failures test_update_cancellation test_action_capture test_ssh_paths}; do
+for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_install_repair test_native_install test_install_options test_source_install_rebuilds_tui test_update test_update_failures test_update_cancellation test_action_capture test_ssh_paths}; do
   "$test"
   printf 'PASS: %s\n' "$test"
 done

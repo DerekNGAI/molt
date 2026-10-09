@@ -44,6 +44,21 @@ The first launch builds the container. Later launches reuse it and reconnect.
 Stopped workspaces start automatically. Subdirectories and nested registered
 repositories select the closest registered workspace.
 
+Open `opencode` in multiple local terminals inside the same repository to use
+independent sessions on its shared server. Connection setup is serialized; the
+clients then run concurrently through the same SSH tunnel.
+
+Quitting OpenCode or closing its terminal stops the work that terminal started,
+including work in sessions created with `/new` or selected later. Other terminals
+keep running, and conversation history remains available. A session being used
+by one terminal can be viewed elsewhere, but another terminal cannot modify it
+until its owner exits. Use a new session for independent work.
+
+Cleanup requires a working connection. Sudden power loss, a hard process kill,
+or a lost network connection can leave remote work running; reconnect and abort
+it in OpenCode. Changing shared configuration or credentials can still reload
+the server and interrupt attached clients.
+
 Only the `opencode` command is intercepted. Commands such as `npm`, `python`,
 `cargo`, and `git` use your ordinary local tools. Outside registered repositories,
 `opencode` runs locally with your normal configuration, accounts, and session
@@ -202,10 +217,13 @@ molt config set MOLT_ANIMATIONS 0
 This disables animated indicators while preserving live metrics and action output.
 `NO_COLOR=1` also disables color and decorative motion.
 
-Source installations build the dashboard once with **Go 1.26 or newer** when no
-prebuilt `bin/molt-tui` is present. The resulting executable needs no Go runtime.
-Go or a bundled executable is required; installation fails with an actionable
-error when neither is available. A packaged executable can be supplied with
+Source installations rebuild the dashboard automatically with **Go 1.26 or newer**,
+including when `bin/molt-tui` already exists. Run `./install.sh --non-interactive`
+to install changes from your local checkout; `molt update` downloads and installs
+the published GitHub `main` branch. Neither needs a separate build command.
+
+The resulting executable needs no Go runtime. Packaged releases can use their
+bundled executable without Go. A packaged executable can also be supplied with
 `MOLT_TUI_BINARY=/path/to/molt-tui ./install.sh`. Interactive installation uses the
 same Bubble Tea interface. The previous shell UI and its Gum dependency have
 been removed.
@@ -321,6 +339,7 @@ and older layouts.
 
 ```bash
 bash tests/molt_test.sh
+bash tests/session_test.sh
 bash tests/lifecycle_test.sh
 bash tests/manage_test.sh
 bash tests/offline_test.sh

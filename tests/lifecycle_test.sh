@@ -64,6 +64,11 @@ fi
 TOOL
 cat >"$TMP/bin/molt-tui" <<'TOOL'
 #!/usr/bin/env bash
+if [[ "${1:-}" == attach-client ]]; then
+  while [[ "$1" != -- ]]; do shift; done
+  shift
+  exec "$@"
+fi
 printf 'native TUI fixture\n'
 TOOL
 cat >"$TMP/bin/ssh" <<'TOOL'

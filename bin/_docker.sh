@@ -51,12 +51,40 @@ ensure_container() {
     --env OPENCODE_CONFIG_DIR=/molt-config/opencode --env OPENCODE_DISABLE_AUTOUPDATE=1 $(quote_remote "$PROJECT_IMAGE") >/dev/null"
 }
 
+with_project_setup_lock() (
+  local lock="$PROJECT_STATE/start.lock" previous attempt acquired=0 work
+  managed_file "$lock"
+  for attempt in {1..300}; do
+    if mkdir "$lock" 2>/dev/null; then acquired=1; break; fi
+    previous="$(read_value "$lock/pid" 2>/dev/null || true)"
+    if [[ "$previous" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$previous" 2>/dev/null; then rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true; fi
+    sleep 0.1
+  done
+  [[ "$acquired" == 1 ]] || die 'another project startup is still running; retry shortly'
+  trap 'rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true; [[ -z "${work:-}" ]] || rm -rf -- "$work"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  write_value "$lock/pid" "$$"
+  work="$(mktemp -d "$MOLT_HOME/state/tmp/start.XXXXXX")"
+  printf '%s\n' "$$" >"$work/parent.pid"
+  printf '%s\n' "$0" >"$work/script"
+  write_value "$work/project" "$PROJECT_ID"
+  PROJECT_SETUP_WORK="$work"
+  load_project_state "$PROJECT_STATE"
+  "$@"
+)
+
 ensure_project_container() {
+  with_project_setup_lock ensure_project_container_locked
+  load_project "@$PROJECT_ID"
+}
+ensure_project_container_locked() {
   ssh_up || { log 'VM connection unavailable; use MOLT_LOCAL=1 opencode, molt reset --local-only, or molt menu uninstall for local recovery'; return 1; }
   if [[ "$PROJECT_ACTIVE" != 1 || "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" ]]; then
     log "Starting ${PROJECT_NAME}…"
-    cmd_start "@$PROJECT_ID"
-    load_project "@$PROJECT_ID"
+    molt_owned_home || die 'install molt before starting a project'
+    start_loaded_project
   else
     prepare_project_dirs
     start_sync

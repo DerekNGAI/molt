@@ -11,6 +11,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "attach-client" {
+		os.Exit(runAttachedClient(os.Args[2:]))
+	}
 	cli := flag.String("cli", "", "path to the MOLT CLI")
 	home := flag.String("home", os.Getenv("MOLT_HOME"), "MOLT installation folder")
 	source := flag.String("install-source", "", "source checkout for the installation wizard")

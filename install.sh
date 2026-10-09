@@ -18,7 +18,7 @@ done
 if [[ "$INTERACTIVE" == 1 || ( "$INTERACTIVE" == auto && -t 0 && -t 1 ) ]]; then
   [[ -t 0 && -t 1 ]] || { molt_error 'interactive installation requires a terminal'; exit 1; }
   binary="${MOLT_TUI_BINARY:-$SRC/bin/molt-tui}"
-  if [[ ! -x "$binary" || -d "$binary" ]]; then
+  if [[ ! -x "$binary" || -d "$binary" || ( -z "${MOLT_TUI_BINARY:-}" && -e "$SRC/.git" ) ]]; then
     command -v go >/dev/null 2>&1 || { molt_error 'install Go 1.26 or supply MOLT_TUI_BINARY to build the control center'; exit 1; }
     bootstrap="$(mktemp -d "${TMPDIR:-/tmp}/molt-bootstrap.XXXXXX")"
     trap 'rm -rf -- "$bootstrap"' EXIT
@@ -123,16 +123,18 @@ cp "$SRC/uninstall.sh" "$STAGE/bin/molt-uninstall"
 cp "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/config.example" "$STAGE/"
 cp "$SRC/tools.lock" "$STAGE/tools.lock"
 chmod +x "$STAGE/bin/"* "$STAGE/shims/"*
-# Releases may bundle a prebuilt dashboard. Source installs build once with Go;
-# the installed dashboard has no Go runtime dependency.
+# Rebuild sources when Go is available; Git checkouts must not reuse stale binaries.
+# Packaged executables and explicit overrides can install without Go.
 if [[ -n "${MOLT_TUI_BINARY:-}" ]]; then
   [[ -x "$MOLT_TUI_BINARY" && ! -d "$MOLT_TUI_BINARY" ]] || { molt_error 'invalid dashboard executable'; exit 1; }
   cp "$MOLT_TUI_BINARY" "$STAGE/bin/molt-tui"
-elif [[ ! -x "$STAGE/bin/molt-tui" && -d "$STAGE/tui" ]]; then
+elif [[ -d "$STAGE/tui" ]]; then
   if command -v go >/dev/null 2>&1; then
     printf 'molt: building the terminal dashboard...\n'
     (cd "$STAGE/tui" && CGO_ENABLED=0 go build -trimpath -o ../bin/molt-tui .)
-  else molt_error 'install Go 1.26 or supply MOLT_TUI_BINARY; the Bubble Tea control center is required'; exit 1; fi
+  elif [[ -e "$SRC/.git" || ! -x "$STAGE/bin/molt-tui" ]]; then
+    molt_error 'install Go 1.26 or supply MOLT_TUI_BINARY; the Bubble Tea control center is required'; exit 1
+  fi
 fi
 [[ -x "$STAGE/bin/molt-tui" ]] || { molt_error 'missing Bubble Tea control center'; exit 1; }
 cat >"$STAGE/MOLT.command" <<'LAUNCHER'
