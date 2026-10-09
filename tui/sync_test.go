@@ -154,6 +154,7 @@ func TestRetryRemovalRequiresClearSynchronization(t *testing.T) {
 		`{"name":"app","conflicts":[{"root":"file"}]}`,
 		`{"name":"app","lastError":"permission denied"}`,
 		`{"name":"app","paused":true}`,
+		`{"name":"app","status":"watching","alpha":{"connected":true},"beta":{"connected":true,"transitionProblems":[{"path":"test/committer.test.js","error":"unable to remove file: permission denied"}]}}`,
 	} {
 		m := newModel(backend{Context: context.Background()})
 		p := project{ID: "aaaaaaaaaaaa", Name: "app", Sync: "app"}
@@ -163,8 +164,46 @@ func TestRetryRemovalRequiresClearSynchronization(t *testing.T) {
 		for _, item := range m.menu.Items {
 			found = found || item.Title == "Retry removal"
 		}
-		if found != strings.Contains(state, `"watching"`) {
+		if found != (strings.Contains(state, `"watching"`) && !strings.Contains(state, `"transitionProblems"`)) {
 			t.Fatalf("incorrect retry availability: %s", state)
+		}
+	}
+}
+
+func TestSynchronizationExplainsFilesystemProblems(t *testing.T) {
+	for _, endpoint := range []string{"alpha", "beta"} {
+		for _, kind := range []string{"scanProblems", "transitionProblems"} {
+			m := newModel(backend{Context: context.Background()})
+			p := project{ID: "aaaaaaaaaaaa", Name: "app", Sync: "app"}
+			m.syncMenu(p, m.dashboard, m.dashboard)
+			data := `[{"name":"app","status":"watching","` + endpoint + `":{"connected":true,"` + kind + `":[{"path":"test/committer.test.js","error":"unable to remove file: permission denied"}]}}]`
+			m.finishQuery(queryMsg{ID: m.queryID, Data: []byte(data)})
+			var problem, repair *menuItem
+			for i := range m.menu.Items {
+				item := &m.menu.Items[i]
+				if strings.Contains(item.Title, "test/committer.test.js") {
+					problem = item
+				}
+				if item.Title == "Repair VM permissions" {
+					repair = item
+				}
+			}
+			if problem == nil {
+				t.Fatalf("%s %s did not expose the failing path", endpoint, kind)
+			}
+			problem.Run()
+			if !strings.Contains(m.dialog.Body, "unable to remove file: permission denied") {
+				t.Fatal("filesystem problem omitted its error")
+			}
+			if (repair != nil) != (endpoint == "beta") {
+				t.Fatal("VM permissions repair offered for the wrong endpoint")
+			}
+			if repair != nil {
+				repair.Run()
+				if m.overlay != "confirm" || !strings.Contains(m.dialog.Body, "stopped") {
+					t.Fatal("permissions repair did not explain writer shutdown")
+				}
+			}
 		}
 	}
 }

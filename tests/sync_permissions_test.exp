@@ -1,0 +1,53 @@
+#!/usr/bin/env expect
+set timeout 25
+log_user 0
+proc see {text} {
+  expect {
+    -exact $text { return }
+    timeout { puts stderr "FAIL: permissions recovery did not show $text"; exit 1 }
+    eof { puts stderr "FAIL: permissions recovery exited before $text"; exit 1 }
+  }
+}
+proc enter {} { send -- "\r" }
+proc down {count} { for {set i 0} {$i<$count} {incr i} { send -- "\033\133B"; after 40 } }
+spawn -noecho $env(MOLT_TEST_TUI) --cli "$env(TEST_ROOT)/bin/molt" --home $env(MOLT_HOME) --screen projects
+stty rows 32 columns 100 < $spawn_out(slave,name)
+see "REPOSITORIES"
+down 2
+enter
+see "REPO"
+down 4
+enter
+see "Remove project and VM resources"
+enter
+see "REMOVE PROJECT"
+send -- "y"
+see "Resolve synchronization issues"
+enter
+see "test/committer.test.js"
+enter
+see "unable to remove file: permission denied"
+enter
+see "Repair VM permissions"
+down 1
+enter
+see "REPAIR VM PERMISSIONS?"
+send -- "y"
+see "Status: synced"
+see "Retry removal"
+down 2
+enter
+see "Remove project and VM resources"
+enter
+see "REMOVE PROJECT"
+send -- "y"
+see "COMPLETED"
+enter
+see "REPOSITORIES"
+send -- "\033"
+after 100
+send -- "q"
+expect eof
+catch wait result
+if {[lindex $result 3]!=0} { puts stderr "FAIL: permissions recovery returned $result"; exit 1 }
+puts "molt permissions terminal recovery: ok"

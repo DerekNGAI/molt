@@ -40,6 +40,24 @@ func (m *model) syncMenu(p project, returnTo, retryRemoval func() tea.Cmd) tea.C
 			name := name
 			items = append(items, menuItem{name, func() tea.Cmd { return m.previewSyncConflict(p, name, refresh) }})
 		}
+		problems, repairable := 0, false
+		for _, endpoint := range []struct {
+			Name  string
+			State syncEndpoint
+		}{{"Mac", s.Alpha}, {"VM", s.Beta}} {
+			for _, group := range []struct {
+				Name  string
+				Items []syncProblem
+			}{{"Scan", endpoint.State.ScanProblems}, {"Transition", endpoint.State.TransitionProblems}} {
+				for _, problem := range group.Items {
+					title := endpoint.Name + " · " + problem.Path
+					body := group.Name + " problem on " + endpoint.Name + "\nPath: " + problem.Path + "\n\n" + problem.Error
+					items = append(items, menuItem{title, func() tea.Cmd { return m.showMessage(title, body, refresh) }})
+					problems++
+					repairable = repairable || endpoint.Name == "VM" && strings.Contains(strings.ToLower(problem.Error), "permission denied")
+				}
+			}
+		}
 		help := "No synchronization session."
 		if exists {
 			help = "Status: " + s.label()
@@ -48,7 +66,21 @@ func (m *model) syncMenu(p project, returnTo, retryRemoval func() tea.Cmd) tea.C
 			help += fmt.Sprintf(" · %d conflicts. Select a path to inspect both versions.", len(sorted))
 		}
 		if exists && s.label() == "error" {
-			help += ". Inspect the error details; reconnect or recheck after correcting the reported problem."
+			if problems > 0 {
+				help += fmt.Sprintf(" · %d filesystem problems. Select a path for details.", problems)
+			} else {
+				help += ". View the error details before rechecking."
+			}
+		}
+		if s.LastError != "" {
+			items = append(items, menuItem{"View synchronization error", func() tea.Cmd { return m.showMessage("Synchronization error", s.LastError, refresh) }})
+		}
+		if repairable {
+			items = append(items, menuItem{"Repair VM permissions", func() tea.Cmd {
+				return m.confirm("Repair VM permissions?", "Restore the VM user's access to root-owned project files and OpenCode state? The project's server will be stopped. File contents are kept.", refresh, func() tea.Cmd {
+					return m.run("Repair VM permissions", refresh, refresh, "sync-repair", "@"+p.ID)
+				})
+			}})
 		}
 		items = append(items, menuItem{"View synchronization details", func() tea.Cmd { return m.run("Synchronization details", refresh, nil, "sync", "@"+p.ID) }})
 		if exists {

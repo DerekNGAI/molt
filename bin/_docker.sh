@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Docker resources remain tagged and contained under the installation's VM root.
-MOLT_RUNTIME_VERSION=opencode-4
+MOLT_RUNTIME_VERSION=opencode-5
 
 dockerfile_for_project() {
   cat >"$1" <<'DOCKERFILE'
@@ -18,7 +18,9 @@ DOCKERFILE
 }
 
 ensure_container() {
-  local running version owner image_id expected_id config_version auth_version expected_auth_version
+  local running version owner image_id expected_id config_version auth_version expected_auth_version identity
+  identity="$(remote_run 'printf "%s:%s\n" "$(id -u)" "$(id -g)"')" || return 1
+  [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]] || die 'could not read VM user identity'
   expected_auth_version="$(remote_run "sha256sum $(quote_remote "$PROJECT_REMOTE_HOME/auth/auth.json") | cut -d ' ' -f1")"
   [[ "$expected_auth_version" =~ ^[a-f0-9]{64}$ ]] || die 'could not read VM provider credentials'
   running="$(remote_run "docker inspect -f '{{.State.Running}}' $(quote_remote "$PROJECT_CONTAINER") 2>/dev/null || true")"
@@ -38,7 +40,7 @@ ensure_container() {
     cancel_project_forwards
     remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER")"
   fi
-  remote_run "docker run -d --init --restart unless-stopped --name $(quote_remote "$PROJECT_CONTAINER") \
+  remote_run "docker run -d --init --restart unless-stopped --user $identity --name $(quote_remote "$PROJECT_CONTAINER") \
     --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.config=$OPENCODE_CONFIG_VERSION --label io.molt.auth=$expected_auth_version \
     --publish 127.0.0.1:$PROJECT_OPENCODE_PORT:4096 --workdir /workspace \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_PATH,dst=/workspace") \

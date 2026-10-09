@@ -84,6 +84,10 @@ for attempt in {1..60}; do
 done
 [[ "$healthy" == 1 ]] || fail 'OpenCode server did not become healthy'
 container="$(cat "$MOLT_HOME/projects/$id/container")"
+vm_uid="$("$DOCKER" exec "$name" id -u molt-test)"
+vm_gid="$("$DOCKER" exec "$name" id -g molt-test)"
+[[ "$("$DOCKER" exec "$name" docker exec "$container" id -u)" == "$vm_uid" ]] || fail 'container does not use the VM user'
+[[ "$("$DOCKER" exec "$name" docker exec "$container" id -g)" == "$vm_gid" ]] || fail 'container does not use the VM group'
 # Exercise real VM telemetry and Mutagen's public JSON schema.
 "$MOLT_HOME/bin/molt" monitor host molt-test >"$TMP/telemetry.txt"
 /usr/bin/python3 -c '
@@ -147,6 +151,12 @@ rm "$OPENCODE_CONFIG_DIR/commands/explain.md"
 source "$ROOT/bin/_molt.sh"
 molt_mutagen sync flush "$container"
 [[ "$(cat "$TMP/repo/server-edit.txt")" == 'edited on server' ]] || fail 'remote edits did not synchronize back'
+# A container-created directory must permit a later Mac deletion on the VM.
+"$DOCKER" exec "$name" docker exec "$container" sh -c 'mkdir -p /workspace/test && printf "container edit\n" > /workspace/test/committer.test.js'
+"$MOLT_HOME/bin/molt" sync-cycle "@$id"
+rm "$TMP/repo/test/committer.test.js"
+"$MOLT_HOME/bin/molt" sync-cycle "@$id"
+"$DOCKER" exec "$name" test ! -e "/home/molt-test/molt/projects/$id/test/committer.test.js" || fail 'Mac deletion was blocked by container ownership'
 "$DOCKER" exec "$name" docker exec "$container" git -C /workspace status --short
 # A previous owned image must also be removed, even after losing its project tag.
 "$DOCKER" exec "$name" docker commit "$container" "molt-prior-$id:cleanup-test" >/dev/null
@@ -161,6 +171,16 @@ grep -Eiq 'not.?found|session.*exist' "$TMP/attach.log" || { cat "$TMP/attach.lo
 "$DOCKER" exec "$name" sh -c 'test ! -e /home/molt-test/.mutagen && test ! -e /home/molt-test/.molt && test ! -e /home/molt-test/.config/opencode'
 [[ ! -e "$HOME/.mutagen" ]] || fail 'Mutagen created global state on the Mac'
 grep -Fq '"openai/gpt-6.1-sol":"xhigh"' "$XDG_STATE_HOME/opencode/model.json" || fail 'attached client lost the saved xhigh preference'
+# Upgrade an old workspace with root-owned project, cache, config, and auth files.
+"$MOLT_HOME/bin/molt" stop "$TMP/repo"
+"$DOCKER" exec "$name" sh -c "mkdir -p /home/molt-test/molt/projects/$id/legacy /home/molt-test/molt/config/opencode/node_modules/legacy && printf 'legacy VM edit\\n' > /home/molt-test/molt/projects/$id/legacy/file && printf 'session history\\n' > /home/molt-test/molt/cache/$id/home/legacy && chown -R 0:0 /home/molt-test/molt/projects/$id/legacy /home/molt-test/molt/config/opencode/node_modules/legacy && chown 0:0 /home/molt-test/molt/cache/$id/home/legacy /home/molt-test/molt/auth/auth.json && chmod 700 /home/molt-test/molt/config/opencode/node_modules/legacy && chmod 600 /home/molt-test/molt/cache/$id/home/legacy /home/molt-test/molt/auth/auth.json"
+printf 'opencode-4\n' >"$MOLT_HOME/projects/$id/runtime_version"
+"$MOLT_HOME/bin/molt" start "$TMP/repo"
+[[ "$(cat "$TMP/repo/legacy/file")" == 'legacy VM edit' ]] || fail 'migration lost a VM edit'
+[[ "$("$DOCKER" exec "$name" docker exec "$container" cat /molt-cache/home/legacy)" == 'session history' ]] || fail 'migration lost or blocked existing session history'
+rm "$TMP/repo/legacy/file"
+"$MOLT_HOME/bin/molt" sync-cycle "@$id"
+"$DOCKER" exec "$name" test ! -e "/home/molt-test/molt/projects/$id/legacy/file" || fail 'migration did not restore deletion access'
 "$DOCKER" exec "$name" sh -c "mkdir -p /home/molt-test/molt/meta/$id/env/.devenv/protected && touch /home/molt-test/molt/meta/$id/env/.devenv/protected/file && chmod 700 /home/molt-test/molt/meta/$id/env/.devenv/protected"
 "$DOCKER" exec "$name" sh -c 'mkdir -p /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin && touch /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin/plugin.d.ts && chown -R 0:0 /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin && chmod 700 /home/molt-test/molt/config/opencode/node_modules/@opencode-ai/plugin'
 "$MOLT_HOME/bin/molt" stop "$TMP/repo"

@@ -265,14 +265,15 @@ flush_project_sync() {
   mutagen sync flush "$PROJECT_SYNC" || return 1
   blocked="$(mutagen sync list "$PROJECT_SYNC" --template '{{range .}}{{if .SessionState}}{{if or .Conflicts .LastError}}blocked{{end}}{{end}}{{if .Alpha.EndpointState}}{{if or .Alpha.ScanProblems .Alpha.TransitionProblems}}blocked{{end}}{{end}}{{if .Beta.EndpointState}}{{if or .Beta.ScanProblems .Beta.TransitionProblems}}blocked{{end}}{{end}}{{end}}')" || return 1
   if [[ -n "$blocked" ]]; then
-    log 'synchronization needs attention; run molt sync and resolve conflicts before continuing'
+    log 'synchronization needs attention; inspect the problems below before continuing'
+    mutagen sync list "$PROJECT_SYNC" --long >&2 || true
     return 1
   fi
 }
 cmd_sync() {
   load_project "${1:-.}" || die 'project is not registered'
   case "${2:-}" in
-    '') mutagen sync list "$PROJECT_SYNC" ;;
+    '') mutagen sync list "$PROJECT_SYNC" --long ;;
     --json) mutagen sync list "$PROJECT_SYNC" --template '{{json .}}' ;;
     *) die 'molt sync [repo] [--json]' ;;
   esac
@@ -297,6 +298,41 @@ cmd_sync_prepare() {
   cancel_project_forwards
   PROJECT_ACTIVE=0
   save_project
+}
+repair_loaded_permissions() (
+  local sessions paused=0
+  [[ "$PROJECT_LAYOUT" == 2 && -n "$PROJECT_REMOTE_HOME" ]] || die 'no contained VM workspace'
+  stop_project_writer || return 1
+  trap 'result=$?; trap - EXIT; if [[ "$paused" == 1 ]]; then mutagen sync resume "$PROJECT_SYNC" || { log "could not resume synchronization; retry records retained"; result=1; }; fi; exit "$result"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if [[ "$PROJECT_SYNC_CREATED" == 1 ]]; then
+    sessions="$(mutagen sync list --template '{{range .}}{{.Name}}{{"\n"}}{{end}}')" || return 1
+    if printf '%s\n' "$sessions" | grep -Fxq "$PROJECT_SYNC"; then
+      if [[ "$(read_value "$PROJECT_STATE/sync_mode" 2>/dev/null || true)" == two-way-safe ]]; then
+        mutagen sync pause "$PROJECT_SYNC" || return 1
+        paused=1
+      else
+        # Retire an old replica before migration can resume it over VM edits.
+        mutagen sync terminate "$PROJECT_SYNC" || return 1
+        PROJECT_SYNC_CREATED=0
+      fi
+    fi
+  fi
+  cancel_project_forwards || return 1
+  PROJECT_ACTIVE=0
+  save_project || return 1
+  remote_script repair-permissions "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$PROJECT_ID" || return 1
+)
+repair_loaded_sync() {
+  repair_loaded_permissions || return 1
+  flush_project_sync
+}
+cmd_sync_repair() {
+  [[ $# == 1 ]] || die 'molt sync-repair <repo>'
+  load_project "$1" || die 'project is not registered'
+  molt_owned_home || return 1
+  with_project_setup_lock repair_loaded_sync
 }
 cmd_sync_endpoint() {
   [[ $# -ge 3 && $# -le 4 ]] || die 'invalid synchronization endpoint arguments'
@@ -329,6 +365,10 @@ start_loaded_project() {
   cmd_setup
   load_project "$path" || die 'could not load project state'
   set_remote_paths
+  if [[ "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" ]]; then
+    repair_loaded_permissions || die 'could not migrate VM permissions; retry records retained'
+    load_project_state "$PROJECT_STATE" || return 1
+  fi
   prepare_project_dirs
   start_sync
   sync_opencode_config
@@ -361,7 +401,11 @@ stop_project_writer() {
 stop_loaded_project() {
   local sessions
   [[ "$PROJECT_ACTIVE" == 1 || -n "$PROJECT_REMOTE_PATH" ]] || return 0
-  stop_project_writer || return 1
+  if [[ "$PROJECT_LAYOUT" == 2 && -n "$PROJECT_REMOTE_HOME" && "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" ]]; then
+    repair_loaded_permissions || return 1
+  else
+    stop_project_writer || return 1
+  fi
   if [[ "$PROJECT_LAYOUT" == 2 ]]; then
     if [[ "$PROJECT_SYNC_CREATED" == 1 ]]; then
       sessions="$(mutagen sync list --template '{{range .}}{{.Name}}{{"\n"}}{{end}}')" || return 1
@@ -626,6 +670,7 @@ molt — remote OpenCode workspaces
   molt status / doctor        show status / check prerequisites
   molt logs [repo]             show OpenCode server logs
   molt sync [repo]             show synchronization status and conflicts
+  molt sync-repair <repo>      stop its server and repair root-owned VM files
   molt monitor [host <alias>|sync]  read machine status for the dashboard
   molt reset [repo|--all] [--local-only]  remove project resources, or only local registration and sync
   molt setup-state [repo]     read recorded VM/project setup state without SSH
@@ -686,10 +731,11 @@ main() {
     logs) cmd_logs "$@" ;; sync) cmd_sync "$@" ;; reset) cmd_reset "$@" ;; remove-remote-roots) cmd_remove_remote_roots "$@" ;;
     sync-preview) cmd_sync_preview "$@" ;; sync-resolve) cmd_sync_resolve "$@" ;; sync-prepare) cmd_sync_prepare "$@" ;;
     sync-endpoint) cmd_sync_endpoint "$@" ;;
+    sync-repair) cmd_sync_repair "$@" ;;
     sync-resume|sync-cycle)
       load_project "${1:?project required}" || die 'project is not registered'
       mutagen sync resume "$PROJECT_SYNC"
-      [[ "$command" != sync-cycle ]] || mutagen sync flush "$PROJECT_SYNC" ;;
+      [[ "$command" != sync-cycle ]] || flush_project_sync ;;
     help|-h|--help) usage ;; *) die "unknown command: $command (try molt help)" ;;
   esac
 }

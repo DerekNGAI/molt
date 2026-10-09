@@ -80,8 +80,12 @@ func (p project) health(h remote) string {
 
 type syncEndpoint struct {
 	Connected                        bool `json:"connected"`
-	ScanProblems, TransitionProblems []json.RawMessage
+	ScanProblems, TransitionProblems []syncProblem
 	StagingProgress                  *struct{ ReceivedSize, TotalSize uint64 }
+}
+
+type syncProblem struct {
+	Path, Error string
 }
 
 type syncState struct {

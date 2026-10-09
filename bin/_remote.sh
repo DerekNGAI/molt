@@ -54,6 +54,28 @@ remove_path() {
 }
 
 case "$action" in
+  repair-permissions)
+    owned
+    id="$1"
+    [[ "$id" =~ ^[a-f0-9]{12}$ ]] || fail 'invalid project identity'
+    paths=("$root/projects/$id" "$root/cache/$id" "$root/config/opencode" "$root/auth")
+    for path in "${paths[@]}"; do
+      [[ -e "$path" || -L "$path" ]] || continue
+      [[ -d "$path" && ! -L "$path" && "$(realpath -m -- "$path")" == "$path" ]] || fail 'redirected permissions repair path'
+    done
+    identity="$(id -u):$(id -g)"
+    [[ "$identity" != 0:* ]] || exit 0
+    for path in "${paths[@]}"; do
+      [[ -d "$path" ]] || continue
+      if ! protected="$(find "$path" -xdev ! -type l -user root -print -quit 2>/dev/null)" || [[ -n "$protected" ]]; then
+        printf 'molt: repairing root-owned VM files in %s\n' "$path" >&2
+        # Find does not follow links; only root-owned entries gain owner access.
+        docker run --rm --quiet --network none --label "io.molt.installation=$owner" \
+          --mount "type=bind,src=$path,dst=/repair" busybox:1.37.0 \
+          sh -c 'find "$1" -xdev ! -type l -user root -exec chmod u+rwX {} + -exec chown "$2" {} +' sh /repair "$identity" || fail 'could not repair VM permissions; retry records retained'
+      fi
+    done
+    ;;
   sync-stage|sync-clean)
     owned
     [[ "$(realpath -m -- "$root/state/tmp")" == "$root/state/tmp" ]] || fail 'redirected synchronization staging directory'

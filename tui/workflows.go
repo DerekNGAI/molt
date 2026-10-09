@@ -550,7 +550,7 @@ func (m *model) withActionConnections(args []string, returnTo, next func() tea.C
 	switch args[0] {
 	case "up", "down", "remove-remote-roots":
 		return m.withConnections(m.resourceHosts(args[0] == "up"), returnTo, next)
-	case "start", "stop", "restart", "logs", "doctor", "remote-oc", "server-config", "sync-resolve", "sync-cycle":
+	case "start", "stop", "restart", "logs", "doctor", "remote-oc", "server-config", "sync-resolve", "sync-cycle", "sync-repair":
 		host := m.inv.Config["MOLT_HOST"]
 		if len(args) > 1 {
 			for _, p := range m.inv.Projects {

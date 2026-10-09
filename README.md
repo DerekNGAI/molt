@@ -285,6 +285,19 @@ After resolution, MOLT rechecks synchronization. Choose **Retry removal** when i
 is clear. Connection and filesystem errors remain visible for inspection and retry.
 MOLT checks synchronization again before deleting its mirror.
 
+Filesystem problems show their endpoint, path, and error in the synchronization
+menu. For VM permission errors, choose **Repair VM permissions**. MOLT stops the
+project's server, pauses sync, and restores the VM user's access to root-owned
+files in its workspace, cache, and shared OpenCode state. File contents are kept;
+symlink targets and files owned by other users are left alone. Sync resumes even
+if repair fails, and removal remains blocked until synchronization is clear.
+The same repair is available with `molt sync-repair <repo>`.
+
+Containers run with the VM user's UID/GID so new directories remain accessible to
+synchronization. Older workspaces repair their ownership on their next launch or
+stop, including during project removal. Launching them recreates the old runtime
+while preserving their workspace, credentials, and session history.
+
 Each container uses Docker's bridge network. Its server listens on port 4096
 inside the container, published to a project-specific **127.0.0.1** port on the VM.
 MOLT forwards that port over its private SSH connection and uses a generated
@@ -395,6 +408,7 @@ bash tests/manage_test.sh
 bash tests/offline_test.sh
 bash tests/tui_test.sh
 bash tests/sync_test.sh
+bash tests/sync_permissions_test.sh
 bash tests/dashboard_test.sh
 bash tests/integration_test.sh
 # Dashboard tests, static checks and build:
@@ -427,3 +441,12 @@ backup survival, and a keyboard flow from blocked removal through resolution and
 successful removal. Set `MOLT_SYNC_REAL_MUTAGEN=/path/to/mutagen` to run it with a
 real Mutagen session between the disposable endpoint directories. SSH and Docker
 remain isolated test doubles.
+
+The permissions test covers error details, checked synchronization, container UID
+mapping, repair failures, root-owned directories, and symlink boundaries. On Linux
+when run as root, set `MOLT_SYNC_REAL_MUTAGEN=/path/to/mutagen` to reproduce and
+repair a real transition failure with an unprivileged Mutagen daemon. The Docker
+integration test checks container-created directories and migration of existing
+root-owned workspace and OpenCode files.
+Set `MOLT_TEST_TUI=/path/to/molt-tui` to include the keyboard flow from failed
+removal through permission inspection, repair, and successful removal.
