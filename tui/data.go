@@ -87,8 +87,12 @@ type syncEndpoint struct {
 type syncState struct {
 	Name, Status, LastError string
 	Paused                  bool
-	Conflicts               []json.RawMessage
+	Conflicts               []syncConflict
 	Alpha, Beta             syncEndpoint
+}
+
+type syncConflict struct {
+	Root string
 }
 
 func (s syncState) label() string {

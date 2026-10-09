@@ -68,6 +68,7 @@ type model struct {
 	onQuery                                                                      func([]byte) tea.Cmd
 	onQueryError                                                                 func(error) tea.Cmd
 	afterAction, actionBack, retry                                               func() tea.Cmd
+	actionFailure                                                                func(error) tea.Cmd
 	session                                                                      *terminalSession
 	sessionCancel                                                                context.CancelFunc
 	sessionBack, afterSession                                                    func() tea.Cmd
@@ -280,6 +281,7 @@ func (m *model) startAction(name string, args ...string) tea.Cmd {
 		return nil
 	}
 	m.afterAction, m.actionBack, m.retry = nil, nil, nil
+	m.actionFailure = nil
 	return m.withActionConnections(args, m.dashboard, func() tea.Cmd { return m.startProcess(name, m.b.CLI, args...) })
 }
 
@@ -473,6 +475,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelAction = nil
 		next := m.afterAction
 		m.afterAction = nil
+		failure := m.actionFailure
+		m.actionFailure = nil
 		if m.overlay == "quit" {
 			return m, tea.Quit
 		}
@@ -488,6 +492,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resumeCollectors()
 		}
 		m.exclusive, m.updating = false, false
+		if msg.Error != nil && failure != nil {
+			return m, tea.Batch(failure(msg.Error), m.poll())
+		}
 		if msg.Error == nil && next != nil {
 			return m, tea.Batch(next(), m.poll())
 		}
@@ -678,7 +685,7 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "y":
 		if p := m.current(); p.ID != "" {
-			return m.startAction("Sync status · "+p.Name, "sync", "@"+p.ID)
+			return m.syncMenu(p, m.dashboard, nil)
 		}
 	case "d":
 		return m.startAction("Diagnostics", "doctor")

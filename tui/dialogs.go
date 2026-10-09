@@ -128,6 +128,7 @@ func (m *model) runProgram(title string, returnTo, next func() tea.Cmd, program 
 		return m.showMessage("Action in progress", "Finish or cancel the current operation first.", returnTo)
 	}
 	m.overlay = "action"
+	m.actionFailure = nil
 	m.dialog = dialogState{Title: title, Back: returnTo}
 	m.afterAction, m.actionBack = next, returnTo
 	m.retry = func() tea.Cmd { return m.runProgram(title, returnTo, next, program, args...) }

@@ -11,6 +11,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "sync-preview" || os.Args[1] == "sync-resolve") {
+		os.Exit(runSyncRecovery(os.Args[1:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "attach-client" {
 		os.Exit(runAttachedClient(os.Args[2:]))
 	}

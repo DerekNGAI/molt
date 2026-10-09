@@ -271,7 +271,50 @@ flush_project_sync() {
 }
 cmd_sync() {
   load_project "${1:-.}" || die 'project is not registered'
-  mutagen sync list "$PROJECT_SYNC"
+  case "${2:-}" in
+    '') mutagen sync list "$PROJECT_SYNC" ;;
+    --json) mutagen sync list "$PROJECT_SYNC" --template '{{json .}}' ;;
+    *) die 'molt sync [repo] [--json]' ;;
+  esac
+}
+cmd_sync_preview() {
+  [[ $# == 2 ]] || die 'molt sync-preview <repo> <conflict-path>'
+  load_project "$1" || die 'project is not registered'
+  molt_owned_home || return 1
+  "$SCRIPT_DIR/molt-tui" sync-preview "$MOLT_HOME/bin/molt" "$MOLT_HOME" "@$PROJECT_ID" "$2"
+}
+cmd_sync_resolve() {
+  [[ $# == 3 ]] || die 'molt sync-resolve <repo> <backup-folder> <mac|vm>'
+  load_project "$1" || die 'project is not registered'
+  molt_owned_home || return 1
+  with_project_setup_lock "$SCRIPT_DIR/molt-tui" sync-resolve "$MOLT_HOME/bin/molt" "$MOLT_HOME" "@$PROJECT_ID" "$2" "$3"
+}
+cmd_sync_prepare() {
+  load_project "${1:?project required}" || die 'project is not registered'
+  [[ "$PROJECT_LAYOUT" == 2 && "$PROJECT_SYNC_CREATED" == 1 ]] || die 'no contained synchronization session'
+  stop_project_writer || return 1
+  mutagen sync pause "$PROJECT_SYNC" || return 1
+  cancel_project_forwards
+  PROJECT_ACTIVE=0
+  save_project
+}
+cmd_sync_endpoint() {
+  [[ $# -ge 3 && $# -le 4 ]] || die 'invalid synchronization endpoint arguments'
+  load_project "$1" || die 'project is not registered'
+  ssh_up || return 1
+  case "$2" in
+    read) remote_script sync-read "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$PROJECT_ID" "$3" ;;
+    write)
+      local stage
+      stage="$(remote_script sync-stage "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID")" || return 1
+      if upload_file /dev/stdin "$stage/replacement.tar"; then
+        remote_script sync-write "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$PROJECT_ID" "$3" "${4:?expected hash required}" "$stage"
+      else
+        remote_script sync-clean "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$stage" || true
+        return 1
+      fi ;;
+    *) die 'invalid synchronization endpoint action' ;;
+  esac
 }
 cmd_start() (
   local path
@@ -303,9 +346,8 @@ start_loaded_project() {
   save_project
   log "$PROJECT_NAME is ready — OpenCode on $MOLT_HOST"
 }
-stop_loaded_project() {
-  local running owner sessions
-  [[ "$PROJECT_ACTIVE" == 1 || -n "$PROJECT_REMOTE_PATH" ]] || return 0
+stop_project_writer() {
+  local running owner
   ssh_up || return 1
   running="$(remote_run "docker inspect -f '{{.State.Running}}' $(quote_remote "$PROJECT_CONTAINER") 2>/dev/null || true")" || return 1
   if [[ "$running" == true ]]; then
@@ -315,6 +357,11 @@ stop_loaded_project() {
     fi
     remote_run "docker stop $(quote_remote "$PROJECT_CONTAINER")" || return 1
   fi
+}
+stop_loaded_project() {
+  local sessions
+  [[ "$PROJECT_ACTIVE" == 1 || -n "$PROJECT_REMOTE_PATH" ]] || return 0
+  stop_project_writer || return 1
   if [[ "$PROJECT_LAYOUT" == 2 ]]; then
     if [[ "$PROJECT_SYNC_CREATED" == 1 ]]; then
       sessions="$(mutagen sync list --template '{{range .}}{{.Name}}{{"\n"}}{{end}}')" || return 1
@@ -637,6 +684,12 @@ main() {
         (cd "$MOLT_HOME/state/ssh" && command ssh -S "./$(basename "$state")" -O exit ignored-host) || exit 1
       done ;;
     logs) cmd_logs "$@" ;; sync) cmd_sync "$@" ;; reset) cmd_reset "$@" ;; remove-remote-roots) cmd_remove_remote_roots "$@" ;;
+    sync-preview) cmd_sync_preview "$@" ;; sync-resolve) cmd_sync_resolve "$@" ;; sync-prepare) cmd_sync_prepare "$@" ;;
+    sync-endpoint) cmd_sync_endpoint "$@" ;;
+    sync-resume|sync-cycle)
+      load_project "${1:?project required}" || die 'project is not registered'
+      mutagen sync resume "$PROJECT_SYNC"
+      [[ "$command" != sync-cycle ]] || mutagen sync flush "$PROJECT_SYNC" ;;
     help|-h|--help) usage ;; *) die "unknown command: $command (try molt help)" ;;
   esac
 }

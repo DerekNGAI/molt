@@ -168,7 +168,7 @@ func (m *model) projectMenu(p project) tea.Cmd {
 		}})
 	}
 	items = append(items, menuItem{"Remove project", func() tea.Cmd { return m.removeProjectMenu(p) }})
-	items = append(items, menuItem{"Server logs", func() tea.Cmd { return m.run("Server logs", returnTo, nil, "logs", "@"+p.ID) }}, menuItem{"Synchronization", func() tea.Cmd { return m.run("Synchronization", returnTo, nil, "sync", "@"+p.ID) }}, menuItem{"Providers and settings", func() tea.Cmd { return m.opencodeMenu(p) }})
+	items = append(items, menuItem{"Server logs", func() tea.Cmd { return m.run("Server logs", returnTo, nil, "logs", "@"+p.ID) }}, menuItem{"Synchronization", func() tea.Cmd { return m.syncMenu(p, returnTo, nil) }}, menuItem{"Providers and settings", func() tea.Cmd { return m.opencodeMenu(p) }})
 	return m.showMenu(p.Name, "VM: "+p.Host+"\nLocal: "+p.Path, m.screen("projects"), items...)
 }
 
@@ -187,7 +187,13 @@ func (m *model) removeProjectMenu(p project) tea.Cmd {
 				body = "VM resources may remain running. Remote edits will not be synchronized, and project cleanup records will be deleted. Remove local registration and synchronization anyway? Your Mac checkout is kept."
 			}
 			return m.confirm("Remove project · "+p.Name, body, returnTo, func() tea.Cmd {
-				run := func() tea.Cmd { return m.runProgram("Remove project", m.screen("projects"), nil, "env", args...) }
+				run := func() tea.Cmd {
+					cmd := m.runProgram("Remove project", m.screen("projects"), nil, "env", args...)
+					if !localOnly && !untouched {
+						m.actionFailure = func(err error) tea.Cmd { return m.removalRecovery(p, err.Error()+"\n\n"+strings.Join(m.output, "\n")) }
+					}
+					return cmd
+				}
 				if !localOnly && !untouched {
 					return m.withConnections([]string{p.Host}, func() tea.Cmd { return m.removeProjectMenu(p) }, run)
 				}
@@ -544,7 +550,7 @@ func (m *model) withActionConnections(args []string, returnTo, next func() tea.C
 	switch args[0] {
 	case "up", "down", "remove-remote-roots":
 		return m.withConnections(m.resourceHosts(args[0] == "up"), returnTo, next)
-	case "start", "stop", "restart", "logs", "doctor", "remote-oc", "server-config":
+	case "start", "stop", "restart", "logs", "doctor", "remote-oc", "server-config", "sync-resolve", "sync-cycle":
 		host := m.inv.Config["MOLT_HOST"]
 		if len(args) > 1 {
 			for _, p := range m.inv.Projects {

@@ -156,7 +156,7 @@ existing synchronization continue independently.
 | Enter | Inspect selected project |
 | `s`, `S`, `r` | Start, stop, restart selected project |
 | `o` | Attach OpenCode inside the embedded terminal pane |
-| `L`, `a`, `y` | Server logs, activity, synchronization details |
+| `L`, `a`, `y` | Server logs, activity, synchronization and conflict recovery |
 | `Y` in output or a result dialog | Copy all retained output or the entire message |
 | `c`, `d`, `n` | Connect VM, diagnostics, register a repository |
 | `:` or Ctrl-P | Open all management commands |
@@ -259,9 +259,25 @@ including newly created files and Git changes. Dependency directories such as
 included so the server can inspect normal repository history and changes.
 
 Mutagen's `two-way-safe` mode preserves conflicting changes rather than silently
-overwriting either side. **Projects → Synchronization**, or `molt sync <repo>`,
-shows conflicts. Resolve them before restarting or removing the workspace. MOLT
-checks for conflicts and synchronization problems before deleting its mirror.
+overwriting either side. Open **Projects → Synchronization**, or press `y` on the
+dashboard, to inspect conflicts and synchronization errors. If project removal
+fails, choose **Resolve synchronization issues** directly from its result screen.
+
+Select a conflicting path, inspect the Mac and VM versions, and choose **Keep Mac
+version** or **Keep VM version**. MOLT stops the project's server and pauses sync
+while applying the choice. Close local editors or Git operations that could change
+the file during resolution. Files changed since inspection require a fresh preview.
+Directory conflicts are resolved as complete groups; Git metadata conflicts are
+grouped under `.git` so its index and refs are not replaced independently. Binary
+files, symbolic links, and deletions retain their content or meaning.
+
+Both snapshots and their preview record are saved in
+`MOLT_HOME/backups/<project-id>/conflict-*/`. Use **Open backups in Finder** to view
+them. These backups survive project removal; complete MOLT uninstallation removes
+them with the installation folder, so copy any backups you need before uninstalling.
+After resolution, MOLT rechecks synchronization. Choose **Retry removal** when it
+is clear. Connection and filesystem errors remain visible for inspection and retry.
+MOLT checks synchronization again before deleting its mirror.
 
 Each container uses Docker's bridge network. Its server listens on port 4096
 inside the container, published to a project-specific **127.0.0.1** port on the VM.
@@ -367,6 +383,7 @@ bash tests/lifecycle_test.sh
 bash tests/manage_test.sh
 bash tests/offline_test.sh
 bash tests/tui_test.sh
+bash tests/sync_test.sh
 bash tests/dashboard_test.sh
 bash tests/integration_test.sh
 # Dashboard tests, static checks and build:
@@ -386,3 +403,10 @@ settings, and the guided installation through uninstallation flow. The opt-in
 integration test requires Docker and creates a disposable SSH host with its own
 Docker daemon; it checks real builds, synchronization in both
 directions, server health, stop/restart, and complete removal.
+
+The synchronization recovery test checks real archives, both version choices,
+changed-file rejection, upload and synchronization failures, Git metadata grouping,
+backup survival, and a keyboard flow from blocked removal through resolution and
+successful removal. Set `MOLT_SYNC_REAL_MUTAGEN=/path/to/mutagen` to run it with a
+real Mutagen session between the disposable endpoint directories. SSH and Docker
+remain isolated test doubles.

@@ -54,6 +54,51 @@ remove_path() {
 }
 
 case "$action" in
+  sync-stage|sync-clean)
+    owned
+    [[ "$(realpath -m -- "$root/state/tmp")" == "$root/state/tmp" ]] || fail 'redirected synchronization staging directory'
+    if [[ "$action" == sync-stage ]]; then mktemp -d "$root/state/tmp/sync-conflict.XXXXXX"; exit 0; fi
+    stage="$1"
+    [[ "$stage" == "$root/state/tmp/sync-conflict."* && "${stage##*/}" != *[!a-zA-Z0-9.-]* && ! -L "$stage" && "$(realpath -m -- "$stage")" == "$stage" ]] || fail 'invalid synchronization staging directory'
+    rm -rf -- "$stage"
+    ;;
+  sync-read|sync-write)
+    owned
+    id="$1"; relative="$2"
+    [[ "$id" =~ ^[a-f0-9]{12}$ ]] || fail 'invalid project identity'
+    case "$relative" in ''|.|..|/*|../*|*/../*|*/..|./*|*/./*|*/.|*//*|*/|*$'\n'*|*$'\r'*) fail 'unsafe conflict path' ;; esac
+    base="$root/projects/$id"; target="$base/$relative"
+    [[ "$(realpath -m -- "$base")" == "$base" && "$(realpath -m -- "$(dirname "$target")")" == "$(dirname "$target")" ]] || fail 'redirected synchronization path'
+    if [[ "$action" == sync-read ]]; then
+      if [[ -e "$target" || -L "$target" ]]; then tar --format=gnu -cf - -C "$base" -- "$relative"; fi
+      exit 0
+    fi
+    expected="$3"; stage="$4"
+    [[ "$expected" =~ ^[a-f0-9]{64}$ && "$stage" == "$root/state/tmp/sync-conflict."* && "${stage##*/}" != *[!a-zA-Z0-9.-]* && -d "$stage" && ! -L "$stage" && "$(realpath -m -- "$stage")" == "$stage" ]] || fail 'invalid conflict replacement'
+    committed=0
+    trap 'if [[ "$committed" == 0 && ( -e "$stage/original" || -L "$stage/original" ) ]]; then if [[ ! -e "$target" && ! -L "$target" ]]; then mv -- "$stage/original" "$target" || exit 1; fi; fi; rm -rf -- "$stage"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    [[ -f "$stage/replacement.tar" && ! -L "$stage/replacement.tar" ]] || fail 'missing replacement archive'
+    mkdir "$stage/files"
+    if [[ -s "$stage/replacement.tar" ]]; then
+      tar -tf "$stage/replacement.tar" >"$stage/entries"
+      while IFS= read -r entry; do
+        entry="${entry%/}"
+        case "$entry" in /*|../*|*/../*|*/..|..|./*|*/./*) fail 'unsafe replacement archive' ;; esac
+        [[ "$entry" == "$relative" || "$entry" == "$relative/"* ]] || fail 'archive entry outside conflict'
+      done <"$stage/entries"
+      tar --no-same-owner --no-same-permissions -xf "$stage/replacement.tar" -C "$stage/files"
+      [[ -e "$stage/files/$relative" || -L "$stage/files/$relative" ]] || fail 'replacement archive has no conflict root'
+    fi
+    if [[ -e "$target" || -L "$target" ]]; then tar --format=gnu -cf "$stage/current.tar" -C "$base" -- "$relative";
+    else : >"$stage/current.tar"; fi
+    [[ "$(sha256sum "$stage/current.tar" | cut -d ' ' -f1)" == "$expected" ]] || fail 'VM file changed since inspection; inspect it again'
+    mkdir -p -- "$(dirname "$target")"
+    if [[ -e "$target" || -L "$target" ]]; then mv -- "$target" "$stage/original"; fi
+    if [[ -s "$stage/replacement.tar" ]]; then mv -- "$stage/files/$relative" "$target"; fi
+    committed=1
+    ;;
   validate-root)
     if [[ -e "$root/.install-manifest" ]]; then owned;
     elif [[ -d "$root" && -n "$(ls -A "$root")" ]]; then fail "populated unowned remote root: $root";

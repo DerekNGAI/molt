@@ -1,0 +1,67 @@
+#!/usr/bin/env expect
+set timeout 25
+log_user 0
+proc see {text} {
+  expect {
+    -exact $text { return }
+    timeout { puts stderr "FAIL: synchronization TUI did not show $text"; exit 1 }
+    eof { puts stderr "FAIL: synchronization TUI exited before $text"; exit 1 }
+  }
+}
+proc enter {} { send -- "\r" }
+proc down {count} { for {set i 0} {$i<$count} {incr i} { send -- "\033\133B"; after 40 } }
+spawn -noecho /bin/bash "$env(MOLT_HOME)/bin/molt" menu projects
+stty rows 32 columns 100 < $spawn_out(slave,name)
+see "REPOSITORIES"
+down 2
+enter
+see "REPO"
+down 4
+enter
+see "Remove project and VM resources"
+enter
+see "REMOVE PROJECT"
+send -- "y"
+see "Resolve synchronization issues"
+enter
+see "file.txt"
+enter
+see "View Mac version"
+enter
+see "MAC / FILE.TXT"
+see "Mac version"
+enter
+see "View VM version"
+down 1
+enter
+see "VM / FILE.TXT"
+see "VM version"
+enter
+see "Keep VM version"
+down 3
+enter
+see "KEEP VM VERSION?"
+send -- "n"
+see "View Mac version"
+down 3
+enter
+see "KEEP VM VERSION?"
+send -- "y"
+see "Status: synced"
+see "Retry removal"
+down 2
+enter
+see "Remove project and VM resources"
+enter
+see "REMOVE PROJECT"
+send -- "y"
+see "COMPLETED"
+enter
+see "REPOSITORIES"
+send -- "\033"
+after 100
+send -- "q"
+expect eof
+catch wait result
+if {[lindex $result 3]!=0} { puts stderr "FAIL: synchronization TUI returned $result"; exit 1 }
+puts "molt synchronization terminal recovery: ok"
