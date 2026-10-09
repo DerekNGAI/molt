@@ -44,6 +44,21 @@ The first launch builds the container. Later launches reuse it and reconnect.
 Stopped workspaces start automatically. Subdirectories and nested registered
 repositories select the closest registered workspace.
 
+Startup reports each step: connecting to the VM, preparing its workspace,
+synchronizing files and settings, building or reusing the container, checking
+OpenCode health, and checking the SSH tunnel. Container builds stream their
+download and installation output. First builds can take several minutes; cached
+builds reuse downloaded layers. Quiet operations report their current step and
+elapsed time every five seconds, including when another launch holds the workspace
+lock. These messages show that MOLT is waiting; they do not guarantee VM progress.
+
+The dashboard keeps the current step and total/step elapsed time above scrollable
+output, including in compact terminals and with animations disabled. SSH checks
+show the destination and their 30-second timeout. Failed actions retain output
+and offer **r** to retry; unavailable SSH connections offer authentication and
+retry. **Esc** opens cancellation for running actions. VM changes may remain after
+cancellation, so retry to reconnect or use diagnostics to inspect the workspace.
+
 Open `opencode` in multiple local terminals inside the same repository to use
 independent sessions on its shared server. Connection setup is serialized; the
 clients then run concurrently through the same SSH tunnel.
@@ -403,6 +418,7 @@ and older layouts.
 ```bash
 bash tests/molt_test.sh
 bash tests/session_test.sh
+bash tests/startup_test.sh
 bash tests/lifecycle_test.sh
 bash tests/manage_test.sh
 bash tests/offline_test.sh

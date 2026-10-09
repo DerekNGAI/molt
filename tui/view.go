@@ -42,6 +42,21 @@ func (m *model) layout() dimensions {
 }
 
 func fit(s string, width int) string { return ansi.Truncate(s, max(0, width), "…") }
+
+func elapsed(start time.Time) string {
+	if start.IsZero() {
+		return "0s"
+	}
+	return time.Since(start).Truncate(time.Second).String()
+}
+
+func (m *model) actionSummary() string {
+	stage := m.actionStage
+	if stage == "" {
+		stage = "Starting operation"
+	}
+	return stage + "\nElapsed: " + elapsed(m.actionStarted) + " · step: " + elapsed(m.stageStarted)
+}
 func cell(s string, width int) string {
 	s = fit(s, width)
 	return s + strings.Repeat(" ", max(0, width-lipgloss.Width(s)))
@@ -365,9 +380,14 @@ func (m *model) activityView(l dimensions) string {
 		title += " · live"
 	}
 	rows := max(1, l.bottom-3)
+	summary := ""
+	if m.action != "" {
+		summary = m.actionSummary() + "\n"
+		rows = max(0, rows-2)
+	}
 	end := max(0, len(lines)-m.scroll)
 	start := max(0, end-rows)
-	return box(title, strings.Join(lines[start:end], "\n"), m.width, l.bottom, m.focus == 3)
+	return box(title, summary+strings.Join(lines[start:end], "\n"), m.width, l.bottom, m.focus == 3)
 }
 
 func (m *model) overlayView() string {

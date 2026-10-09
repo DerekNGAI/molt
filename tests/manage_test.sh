@@ -386,7 +386,8 @@ test_action_capture() (
   install capture
   local work rc=0
   work="$(mktemp -d "$MOLT_HOME/state/tmp/action.XXXXXX")"
-  "$MOLT" ui-action "$work" /bin/bash -c 'printf "success details\n"' >/dev/null || fail 'successful action failed during cleanup'
+  "$MOLT" ui-action "$work" /bin/bash -c 'printf "success details\n"; printf "Building container image\n" >"$MOLT_UI_PROGRESS"' >/dev/null || fail 'successful action failed during cleanup'
+  [[ "$(<"$work/progress")" == 'Building container image' ]] || fail 'action did not provide its progress file'
   [[ ! -f "$work/pid" ]] || fail 'successful action left a worker record'
   "$MOLT" ui-action "$work" /bin/bash -c 'printf "failure details\n"; exit 23' >/dev/null || rc=$?
   [[ "$rc" == 23 ]] || fail 'captured action lost its exit status'

@@ -70,6 +70,8 @@ type model struct {
 	onQueryError                                                                 func(error) tea.Cmd
 	afterAction, actionBack, retry                                               func() tea.Cmd
 	actionFailure                                                                func(error) tea.Cmd
+	queryStarted, actionStarted, stageStarted                                    time.Time
+	actionStage                                                                  string
 	session                                                                      *terminalSession
 	sessionCancel                                                                context.CancelFunc
 	sessionBack, afterSession                                                    func() tea.Cmd
@@ -281,9 +283,7 @@ func (m *model) startAction(name string, args ...string) tea.Cmd {
 		m.record("An action is already running · Esc opens cancellation")
 		return nil
 	}
-	m.afterAction, m.actionBack, m.retry = nil, nil, nil
-	m.actionFailure = nil
-	return m.withActionConnections(args, m.dashboard, func() tea.Cmd { return m.startProcess(name, m.b.CLI, args...) })
+	return m.run(name, m.dashboard, nil, args...)
 }
 
 func (m *model) startProcess(name, program string, args ...string) tea.Cmd {
@@ -307,6 +307,7 @@ func (m *model) startProcess(name, program string, args ...string) tea.Cmd {
 	ctx, cancel := context.WithCancel(m.b.Context)
 	m.cancelAction = cancel
 	m.action = name
+	m.actionStarted, m.stageStarted, m.actionStage = time.Now(), time.Time{}, ""
 	m.work = work
 	m.logs = true
 	m.logProject = ""
@@ -350,6 +351,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case queryMsg:
 		return m, m.finishQuery(msg)
+	case queryTickMsg:
+		if int(msg) == m.queryID && m.overlay == "loading" {
+			return m, queryTick(m.queryID)
+		}
+		return m, nil
 	case sessionStartedMsg:
 		return m, m.sessionStarted(msg)
 	case sessionOutputMsg:
@@ -370,7 +376,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case pollMsg:
 		if m.work != "" {
-			m.output = readTail(filepath.Join(m.work, "output"))
+			m.readActionOutput()
 		}
 		if !m.paused {
 			return m, tea.Batch(m.poll(), pollTick())
@@ -379,7 +385,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case frameMsg:
 		m.frame++
 		if m.work != "" {
-			m.output = readTail(filepath.Join(m.work, "output"))
+			m.readActionOutput()
 		}
 		if (m.animation && m.busy()) || m.work != "" {
 			return m, animationTick()
@@ -460,7 +466,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case actionMsg:
-		m.output = readTail(filepath.Join(msg.Work, "output"))
+		m.readActionOutput()
 		if msg.Error != nil {
 			m.record(msg.Name + " failed · " + msg.Error.Error())
 		} else {
@@ -504,7 +510,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Error != nil {
 				result = "Failed: " + msg.Error.Error()
 			}
-			m.showMessage(msg.Name+" · "+result, strings.Join(m.output, "\n"), m.actionBack)
+			body := "Elapsed: " + elapsed(m.actionStarted) + "\n\n" + strings.Join(m.output, "\n")
+			if msg.Error != nil && m.actionStage != "" {
+				body = "Failed during: " + m.actionStage + "\n" + body
+			}
+			m.showMessage(msg.Name+" · "+result, body, m.actionBack)
 			m.dialog.Retry = m.retry
 		}
 		if m.installing {
@@ -548,6 +558,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.key(msg)
 	}
 	return m, nil
+}
+
+func (m *model) readActionOutput() {
+	m.output = readTail(filepath.Join(m.work, "output"))
+	stage := clean(readValue(filepath.Join(m.work, "progress")))
+	if stage != "" && stage != m.actionStage {
+		m.actionStage, m.stageStarted = stage, time.Now()
+	}
 }
 
 func (m *model) selectRow(row int) {

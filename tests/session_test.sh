@@ -3,6 +3,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-sessions.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+source "$ROOT/bin/_molt.sh"
 source "$ROOT/bin/_opencode.sh"
 source "$ROOT/bin/_docker.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -11,7 +12,7 @@ die() { fail "$*"; }
 managed_file() { [[ ! -L "$1" ]] || fail 'symlinked state'; }
 write_value() { printf '%s\n' "$2" >"$1"; }
 read_value() { [[ ! -f "$1" ]] || IFS= read -r REPLY <"$1"; printf '%s\n' "${REPLY:-}"; }
-export MOLT_HOME="$TMP/home" PROJECT_STATE="$TMP/project" PROJECT_ID=aaaaaaaaaaaa
+export MOLT_HOME="$TMP/home" PROJECT_STATE="$TMP/project" PROJECT_ID=aaaaaaaaaaaa PROJECT_NAME=app
 export PROJECT_OPENCODE_PORT=4100 MOLT_HOST=test-vm
 mkdir -p "$PROJECT_STATE" "$MOLT_HOME/state/tmp"
 ssh() { printf '%s\n' "$*" >>"$TMP/ssh.log"; }

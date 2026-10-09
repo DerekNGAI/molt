@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"strings"
@@ -50,6 +51,12 @@ type queryMsg struct {
 	ID    int
 	Data  []byte
 	Error error
+}
+
+type queryTickMsg int
+
+func queryTick(id int) tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return queryTickMsg(id) })
 }
 
 func (m *model) dashboard() tea.Cmd {
@@ -106,14 +113,19 @@ func (m *model) fetch(title string, returnTo func() tea.Cmd, done func([]byte) t
 	m.queryCancel, m.onQuery = cancel, done
 	m.onQueryError = nil
 	m.overlay = "loading"
-	m.dialog = dialogState{Title: title, Body: "Loading…", Back: returnTo}
+	m.queryStarted = time.Now()
+	body := "Retrieving " + title + "…\nThis check times out after 30s."
+	if len(args) >= 3 && args[0] == "connection" && args[1] == "test" {
+		body = "Checking SSH connection to " + clean(args[2]) + "…\nWaiting for the VM response. Timeout: 30s."
+	}
+	m.dialog = dialogState{Title: title, Body: body, Back: returnTo, Retry: func() tea.Cmd { return m.fetch(title, returnTo, done, args...) }}
 	b := m.b
 	b.Context = ctx
-	return func() tea.Msg {
+	return tea.Batch(queryTick(id), func() tea.Msg {
 		defer cancel()
 		data, err := b.output(30*time.Second, args...)
 		return queryMsg{id, data, err}
-	}
+	})
 }
 func (m *model) finishQuery(msg queryMsg) tea.Cmd {
 	if msg.ID != m.queryID || m.overlay != "loading" {
@@ -121,10 +133,16 @@ func (m *model) finishQuery(msg queryMsg) tea.Cmd {
 	}
 	m.queryCancel = nil
 	if msg.Error != nil {
+		if errors.Is(msg.Error, context.DeadlineExceeded) {
+			msg.Error = fmt.Errorf("Timed out after 30s. Retry this check; for VM operations, check the connection or authenticate through SSH.\n\n%w", msg.Error)
+		}
 		if m.onQueryError != nil {
 			return m.onQueryError(msg.Error)
 		}
-		return m.showMessage(m.dialog.Title+" · failed", msg.Error.Error(), m.dialog.Back)
+		retry := m.dialog.Retry
+		cmd := m.showMessage(m.dialog.Title+" · failed", msg.Error.Error(), m.dialog.Back)
+		m.dialog.Retry = retry
+		return cmd
 	}
 	return m.onQuery(msg.Data)
 }
@@ -384,18 +402,23 @@ func (m *model) nativeView() (string, bool) {
 		if h <= 10 {
 			body = fmt.Sprintf("%s (%d/%d)\n%s\n%s", clean(f.Label), m.form.Index+1, len(m.form.Fields), text.Render(ansi.Cut(value, offset, offset+w-4)), red.Render(fit(m.form.Error, w-4)))
 		}
-	case "confirm", "message", "loading":
+	case "loading":
+		title, body = m.dialog.Title, m.dialog.Body+"\n\nElapsed: "+elapsed(m.queryStarted)
+	case "confirm", "message":
 		title, body = m.dialog.Title, m.dialog.Body
 		lines := strings.Split(ansi.Wrap(body, max(1, w-4), ""), "\n")
 		start := min(m.overlayScroll, max(0, len(lines)-capacity))
 		body = strings.Join(lines[start:min(len(lines), start+capacity)], "\n")
 	case "action":
 		title = m.action + " · " + m.spinner() + " running"
+		summary := m.actionSummary()
+		rows := max(0, capacity-strings.Count(summary, "\n")-1)
 		end := max(0, len(m.output)-m.scroll)
-		body = strings.Join(m.output[max(0, end-capacity):end], "\n")
+		body = strings.Join(m.output[max(0, end-rows):end], "\n")
 		if body == "" {
 			body = "Waiting for output…"
 		}
+		body = summary + "\n" + body
 	case "editor":
 		title = "SERVER SETTINGS / JSONC"
 		r := m.editor.Text

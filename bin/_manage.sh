@@ -348,6 +348,7 @@ cmd_ui_action() {
   molt_owned_home || die 'not an owned installation'
   case "$work" in "$MOLT_HOME/state/tmp/action."*) ;; *) die 'invalid action directory' ;; esac
   managed_file "$work"; managed_file "$work/pid"; managed_file "$work/output"
+  managed_file "$work/progress"
   [[ -d "$work" ]] || die 'action directory not found'
   printf '%s\n' "$$" >"$work/pid"
   capture_cleanup() {
@@ -364,7 +365,7 @@ cmd_ui_action() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   [[ ! -f "$work/cancel" ]] || exit 130
-  ( "$@" <&0 2>&1 | tee "$work/output" ) &
+  ( MOLT_UI_PROGRESS="$work/progress" "$@" <&0 2>&1 | tee "$work/output" ) &
   worker=$!
   wait "$worker"
 }

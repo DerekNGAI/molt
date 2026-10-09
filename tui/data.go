@@ -245,6 +245,9 @@ func (b backend) output(timeout time.Duration, args ...string) ([]byte, error) {
 	c.Stderr = &errors
 	data, err := c.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w: %s", ctx.Err(), clean(errors.String()))
+		}
 		return nil, fmt.Errorf("%s: %s", err, clean(errors.String()))
 	}
 	return data, nil

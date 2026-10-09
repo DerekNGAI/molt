@@ -2,6 +2,26 @@
 # Docker resources remain tagged and contained under the installation's VM root.
 MOLT_RUNTIME_VERSION=opencode-5
 
+startup_progress() {
+  log "$1"
+  if [[ -n "${PROJECT_SETUP_WORK:-}" ]]; then printf '%s\n' "$1" >"$PROJECT_SETUP_WORK/progress"; fi
+  if [[ -n "${MOLT_UI_PROGRESS:-}" ]]; then
+    managed_file "$MOLT_UI_PROGRESS"
+    printf '%s\n' "$1" >"$MOLT_UI_PROGRESS"
+  fi
+}
+
+startup_heartbeat() (
+  local work="$1" started="$2" stage sleeper
+  trap 'exit 0' INT TERM HUP
+  while :; do
+    sleep 5 & sleeper=$!
+    wait "$sleeper" 2>/dev/null || exit 0
+    stage="$(read_value "$work/progress" 2>/dev/null || true)"
+    log "Waiting for progress: ${stage:-workspace setup} · $((SECONDS-started))s elapsed"
+  done
+)
+
 dockerfile_for_project() {
   cat >"$1" <<'DOCKERFILE'
 FROM ubuntu:22.04
@@ -19,6 +39,7 @@ DOCKERFILE
 
 ensure_container() {
   local running version owner image_id expected_id config_version auth_version expected_auth_version identity
+  startup_progress 'Checking container runtime'
   identity="$(remote_run 'printf "%s:%s\n" "$(id -u)" "$(id -g)"')" || return 1
   [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]] || die 'could not read VM user identity'
   expected_auth_version="$(remote_run "sha256sum $(quote_remote "$PROJECT_REMOTE_HOME/auth/auth.json") | cut -d ' ' -f1")"
@@ -33,13 +54,16 @@ ensure_container() {
     config_version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.config\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
     auth_version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.auth\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
     if [[ "$version" == "$MOLT_RUNTIME_VERSION" && "$image_id" == "$expected_id" && "$config_version" == "$OPENCODE_CONFIG_VERSION" && "$auth_version" == "$expected_auth_version" ]]; then
-      [[ "$running" == true ]] || remote_run "docker start $(quote_remote "$PROJECT_CONTAINER") >/dev/null"
+      if [[ "$running" == true ]]; then startup_progress 'Reusing running container';
+      else startup_progress 'Starting existing container'; remote_run "docker start $(quote_remote "$PROJECT_CONTAINER") >/dev/null"; fi
       return 0
     fi
     # Recreate only the container; retain workspace, credentials, and session history.
+    startup_progress 'Updating container runtime'
     cancel_project_forwards
     remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER")"
   fi
+  startup_progress 'Starting container'
   remote_run "docker run -d --init --restart unless-stopped --user $identity --name $(quote_remote "$PROJECT_CONTAINER") \
     --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.config=$OPENCODE_CONFIG_VERSION --label io.molt.auth=$expected_auth_version \
     --publish 127.0.0.1:$PROJECT_OPENCODE_PORT:4096 --workdir /workspace \
@@ -54,8 +78,34 @@ ensure_container() {
 }
 
 with_project_setup_lock() (
-  local lock="$PROJECT_STATE/start.lock" previous attempt acquired=0 work
+  local lock="$PROJECT_STATE/start.lock" previous attempt acquired=0 work heartbeat='' started=$SECONDS
   managed_file "$lock"
+  work="$(mktemp -d "$MOLT_HOME/state/tmp/start.XXXXXX")" || return 1
+  startup_cleanup() {
+    local rc=$? stage
+    trap - EXIT
+    if [[ -n "$heartbeat" ]]; then molt_kill_tree "$heartbeat"; wait "$heartbeat" 2>/dev/null || true; fi
+    if [[ "$rc" != 0 ]]; then
+      stage="$(read_value "$work/progress" 2>/dev/null || true)"
+      case "$rc" in
+        129|130|143) log "Cancelled during: ${stage:-workspace setup}. VM changes may remain; retry to reconnect." ;;
+        *) log "Failed during: ${stage:-workspace setup}. Retry startup, or inspect molt logs @$PROJECT_ID and molt doctor." ;;
+      esac
+    fi
+    if [[ "$acquired" == 1 ]]; then rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true; fi
+    rm -rf -- "$work"
+    exit "$rc"
+  }
+  trap startup_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  printf '%s\n' "$$" >"$work/parent.pid"
+  printf '%s\n' "$0" >"$work/script"
+  write_value "$work/project" "$PROJECT_ID"
+  PROJECT_SETUP_WORK="$work"
+  startup_progress "Waiting for workspace access · ${PROJECT_NAME:-$PROJECT_ID}"
+  startup_heartbeat "$work" "$started" & heartbeat=$!
   for attempt in {1..300}; do
     if mkdir "$lock" 2>/dev/null; then acquired=1; break; fi
     previous="$(read_value "$lock/pid" 2>/dev/null || true)"
@@ -63,16 +113,7 @@ with_project_setup_lock() (
     sleep 0.1
   done
   [[ "$acquired" == 1 ]] || die 'another project startup is still running; retry shortly'
-  trap 'rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true; [[ -z "${work:-}" ]] || rm -rf -- "$work"' EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  trap 'exit 129' HUP
   write_value "$lock/pid" "$$"
-  work="$(mktemp -d "$MOLT_HOME/state/tmp/start.XXXXXX")"
-  printf '%s\n' "$$" >"$work/parent.pid"
-  printf '%s\n' "$0" >"$work/script"
-  write_value "$work/project" "$PROJECT_ID"
-  PROJECT_SETUP_WORK="$work"
   load_project_state "$PROJECT_STATE"
   "$@"
 )
@@ -82,6 +123,7 @@ ensure_project_container() {
   load_project "@$PROJECT_ID"
 }
 ensure_project_container_locked() {
+  startup_progress "Connecting to VM · $MOLT_HOST"
   ssh_up || { log 'VM connection unavailable; use MOLT_LOCAL=1 opencode, molt reset --local-only, or molt menu uninstall for local recovery'; return 1; }
   if [[ "$PROJECT_ACTIVE" != 1 || "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" ]]; then
     log "Starting ${PROJECT_NAME}…"
@@ -95,5 +137,6 @@ ensure_project_container_locked() {
     ensure_container
     wait_opencode_ready
     forward_opencode_port
+    startup_progress "$PROJECT_NAME is ready on $MOLT_HOST"
   fi
 }

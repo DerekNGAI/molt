@@ -14,6 +14,7 @@ validate_opencode_config() {
   ' "$1" >/dev/null 2>&1
 }
 sync_opencode_config() {
+  startup_progress 'Synchronizing OpenCode settings'
   OPENCODE_CONFIG_VERSION="$(upload_opencode_config)" || die 'could not synchronize local OpenCode configuration; working VM settings retained'
 }
 upload_opencode_config() (
@@ -49,6 +50,7 @@ ensure_password() {
   chmod 600 "$MOLT_OPENCODE_PASSWORD_FILE"
 }
 sync_password() {
+  startup_progress 'Securing workspace connection'
   ensure_password
   upload_file "$MOLT_OPENCODE_PASSWORD_FILE" "$PROJECT_REMOTE_META/opencode.password"
   remote_run "chmod 600 $(quote_remote "$PROJECT_REMOTE_META/opencode.password")"
@@ -56,7 +58,7 @@ sync_password() {
 wait_opencode_ready() {
   local command
   command='for attempt in $(seq 1 60); do curl -fsS --max-time 1 --user "opencode:$(cat /molt-meta/opencode.password)" http://127.0.0.1:4096/global/health >/dev/null 2>&1 && exit 0; sleep 0.5; done; exit 1'
-  log 'Waiting for OpenCode…'
+  startup_progress 'Waiting for OpenCode server health'
   if ! remote_run "docker exec $(quote_remote "$PROJECT_CONTAINER") sh -c $(quote_remote "$command")"; then
     remote_run "docker logs --tail 30 $(quote_remote "$PROJECT_CONTAINER") 2>&1" >&2 || true
     die 'OpenCode did not become ready; retry startup or inspect molt logs'
@@ -73,6 +75,7 @@ cancel_project_forwards() {
 }
 forward_opencode_port() {
   local port="$PROJECT_OPENCODE_PORT" status
+  startup_progress 'Opening and checking SSH tunnel'
   # The SSH master reuses an identical forward and rejects another owner's listener.
   ssh -O forward -L "127.0.0.1:${port}:127.0.0.1:${port}" "$MOLT_HOST" >/dev/null 2>&1 || die "could not forward OpenCode on localhost:$port; check for another listener"
   write_value "$PROJECT_STATE/forwards" "$port"
@@ -126,6 +129,7 @@ attach_loaded_project() {
   shift
   ensure_project_container
   load_password
+  startup_progress 'Opening OpenCode session'
   MOLT_CLIENT_UPSTREAM="http://127.0.0.1:$PROJECT_OPENCODE_PORT" MOLT_CLIENT_DIRECTORY="$directory" \
     cmd_client attach "http://127.0.0.1:$PROJECT_OPENCODE_PORT" --dir "$directory" "$@" || rc=$?
   # Flush current edits; synchronization continues after the client disconnects.

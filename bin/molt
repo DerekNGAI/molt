@@ -201,7 +201,9 @@ remote_script() { ssh "$MOLT_HOST" "bash -s -- $(quote_remote "$@")" <"$SCRIPT_D
 cmd_setup() {
   local root home record field
   molt_owned_home || die 'install molt before preparing a VM'
+  startup_progress "Connecting to VM · $MOLT_HOST"
   ssh_up || return 1
+  startup_progress 'Checking Docker and preparing VM workspace'
   home="$(remote_home)" || return 1
   root="$(expand_remote_path "${PROJECT_REMOTE_HOME:-$MOLT_REMOTE_HOME}" "$home")"
   root="$(remote_script validate-root "$root" "$MOLT_INSTALL_ID")" || die 'invalid remote workspace; configuration can be corrected before retrying'
@@ -235,9 +237,10 @@ scan_repositories() {
     done | sort -u
 }
 cmd_register() { register_project "${1:-.}"; log "registered $PROJECT_NAME ($PROJECT_ID)"; printf '%s\n' "$PROJECT_STATE"; }
-prepare_project_dirs() { remote_script prepare "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$PROJECT_ID"; }
+prepare_project_dirs() { startup_progress 'Preparing repository folders'; remote_script prepare "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$PROJECT_ID"; }
 start_sync() {
   local sessions mode
+  startup_progress 'Synchronizing repository files'
   mutagen daemon start
   sessions="$(mutagen sync list --template '{{range .}}{{.Name}}{{"\n"}}{{end}}')"
   mode="$(read_value "$PROJECT_STATE/sync_mode" 2>/dev/null || true)"
@@ -366,17 +369,19 @@ start_loaded_project() {
   load_project "$path" || die 'could not load project state'
   set_remote_paths
   if [[ "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" ]]; then
+    startup_progress 'Preparing VM workspace permissions'
     repair_loaded_permissions || die 'could not migrate VM permissions; retry records retained'
     load_project_state "$PROJECT_STATE" || return 1
   fi
   prepare_project_dirs
   start_sync
   sync_opencode_config
-  log 'Building the OpenCode container…'
+  startup_progress 'Building container image'
+  log 'First builds download Ubuntu, Node.js and OpenCode; cached builds reuse downloaded layers.'
   dockerfile_for_project "$work/Dockerfile"
   upload_file "$work/Dockerfile" "$PROJECT_REMOTE_META/Dockerfile"
   upload_file "$SCRIPT_DIR/../tools.lock" "$PROJECT_REMOTE_META/tools.lock"
-  remote_run "docker build --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --tag $(quote_remote "$PROJECT_IMAGE") --file $(quote_remote "$PROJECT_REMOTE_META/Dockerfile") $(quote_remote "$PROJECT_REMOTE_META") >/dev/null"
+  remote_run "docker build --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --tag $(quote_remote "$PROJECT_IMAGE") --file $(quote_remote "$PROJECT_REMOTE_META/Dockerfile") $(quote_remote "$PROJECT_REMOTE_META") >&2"
   sync_password
   ensure_container
   wait_opencode_ready
@@ -384,7 +389,7 @@ start_loaded_project() {
   PROJECT_ACTIVE=1 PROJECT_RUNTIME_VERSION="$MOLT_RUNTIME_VERSION"
   PROJECT_SETUP_STATE=complete
   save_project
-  log "$PROJECT_NAME is ready — OpenCode on $MOLT_HOST"
+  startup_progress "$PROJECT_NAME is ready on $MOLT_HOST"
 }
 stop_project_writer() {
   local running owner
