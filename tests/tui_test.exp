@@ -47,6 +47,13 @@ see "COMPLETED"
 enter
 see "REPOSITORIES"
 escape
+see "COMMANDS"
+see "› Repositories"
+enter
+see "REPOSITORIES"
+escape
+see "COMMANDS"
+escape
 see "WORKSPACES"
 if {[catch {exec /bin/bash "$env(MOLT_HOME)/bin/molt" project-find "$env(TUI_TMP)/repos/service"}]} { puts stderr "FAIL: scan selection was not registered"; exit 1 }
 # Existing SSH aliases resolve using the real CLI, including included configs.
@@ -70,6 +77,9 @@ see "CONNECTION / ALTERNATE-VM"
 if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_HOST] != "alternate-vm"} { puts stderr "FAIL: alias selection was not saved"; exit 1 }
 escape
 see "CONNECTIONS"
+escape
+see "COMMANDS"
+see "› Connections"
 escape
 see "WORKSPACES"
 # Password input goes to an embedded PTY, never to the dashboard shortcuts.
@@ -130,6 +140,8 @@ enter
 see "Animations: Off"
 stty rows 14 columns 42 < $spawn_out(slave,name)
 after 300
+escape
+see "COMMANDS"
 escape
 send -- "3"
 see "WORKSPACES"
@@ -210,6 +222,8 @@ send -- "y"
 see "COMPLETED"
 enter
 see "REPOSITORIES"
+escape
+see "COMMANDS"
 escape
 see "WORKSPACES"
 # Destructive actions require an explicit confirmation; cancel preserves state.

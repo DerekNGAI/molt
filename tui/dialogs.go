@@ -52,7 +52,16 @@ type queryMsg struct {
 	Error error
 }
 
-func (m *model) dashboard() tea.Cmd { m.overlay = ""; return nil }
+func (m *model) dashboard() tea.Cmd {
+	m.overlay, m.screenBack = "", nil
+	return nil
+}
+func (m *model) managementBack() tea.Cmd {
+	if m.screenBack != nil {
+		return m.screenBack()
+	}
+	return m.dashboard()
+}
 func (m *model) screen(name string) func() tea.Cmd {
 	return func() tea.Cmd { return m.openScreen(name) }
 }

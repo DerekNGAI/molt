@@ -133,6 +133,116 @@ func TestManagementCommandsStayInsideUI(t *testing.T) {
 	}
 }
 
+func TestCommandMenusReturnToCommands(t *testing.T) {
+	for index, item := range palette() {
+		if !item.Interactive {
+			continue
+		}
+		t.Run(item.Title, func(t *testing.T) {
+			m := newModel(backend{Context: context.Background()})
+			defer m.collectorCancel()
+			m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+			m.paletteIndex = index
+			m.key(tea.KeyMsg{Type: tea.KeyEnter})
+			m.key(tea.KeyMsg{Type: tea.KeyEsc})
+			if m.overlay != "palette" || m.paletteIndex != index {
+				t.Fatalf("Escape lost Commands or its selection: overlay=%q index=%d", m.overlay, m.paletteIndex)
+			}
+			m.key(tea.KeyMsg{Type: tea.KeyEnter})
+			if m.overlay != "native-menu" {
+				t.Fatal("returning to Commands did not allow reopening the selected menu")
+			}
+			m.key(tea.KeyMsg{Type: tea.KeyEsc})
+			m.key(tea.KeyMsg{Type: tea.KeyEsc})
+			if m.overlay != "" {
+				t.Fatal("Escape from Commands did not return to the dashboard")
+			}
+			m.openScreen(item.Args[0])
+			m.key(tea.KeyMsg{Type: tea.KeyEsc})
+			if m.overlay != "" {
+				t.Fatal("a directly opened screen retained a stale Commands parent")
+			}
+		})
+	}
+}
+
+func TestCommandParentSurvivesChildForms(t *testing.T) {
+	for _, index := range []int{0, 1, 4} {
+		t.Run(palette()[index].Title, func(t *testing.T) {
+			m := newModel(backend{Home: t.TempDir(), Context: context.Background()})
+			defer m.collectorCancel()
+			m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+			m.paletteIndex = index
+			m.key(tea.KeyMsg{Type: tea.KeyEnter})
+			title := m.menu.Title
+			m.key(tea.KeyMsg{Type: tea.KeyEnter})
+			if m.overlay != "form" {
+				t.Fatal("menu did not open its child form")
+			}
+			m.key(tea.KeyMsg{Type: tea.KeyEsc})
+			if m.overlay != "native-menu" || m.menu.Title != title {
+				t.Fatal("Escape from a form skipped its parent menu")
+			}
+			m.key(tea.KeyMsg{Type: tea.KeyEsc})
+			if m.overlay != "palette" || m.paletteIndex != index {
+				t.Fatal("rebuilding the parent menu lost Commands")
+			}
+		})
+	}
+}
+
+func TestCommandActionsReturnToCommands(t *testing.T) {
+	for _, index := range []int{6, 7, 8} {
+		t.Run(palette()[index].Title, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(home, "state", "tmp"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			m := newModel(backend{Home: home, Context: context.Background()})
+			defer m.collectorCancel()
+			m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+			m.paletteIndex = index
+			m.key(tea.KeyMsg{Type: tea.KeyEnter})
+			if index == 8 {
+				if m.action != "" {
+					t.Fatal("Stop all projects ran without confirmation")
+				}
+				m.key(tea.KeyMsg{Type: tea.KeyEsc})
+				if m.overlay != "palette" || m.paletteIndex != index {
+					t.Fatal("cancelling Stop all projects lost Commands")
+				}
+				m.key(tea.KeyMsg{Type: tea.KeyEnter})
+				m.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+			}
+			if m.overlay != "action" || m.action == "" {
+				t.Fatal("command did not open an action panel")
+			}
+			cancelled := false
+			cancel := m.cancelAction
+			defer cancel()
+			m.cancelAction = func() { cancelled = true; cancel() }
+			for _, key := range []tea.KeyMsg{{Type: tea.KeyEsc}, {Type: tea.KeyRunes, Runes: []rune{'n'}}} {
+				m.key(tea.KeyMsg{Type: tea.KeyEsc})
+				if m.overlay != "cancel" {
+					t.Fatal("Escape during an action did not request cancellation")
+				}
+				m.key(key)
+				if cancelled || m.overlay != "action" {
+					t.Fatal("declining cancellation did not return to the running action")
+				}
+			}
+			m.Update(actionMsg{Name: m.action, Work: m.work})
+			if m.overlay != "message" {
+				t.Fatal("completed command did not show its result")
+			}
+			m.key(tea.KeyMsg{Type: tea.KeyEsc})
+			if m.overlay != "palette" || m.paletteIndex != index {
+				t.Fatal("Escape from a command result lost Commands")
+			}
+		})
+	}
+}
+
 func TestInteractiveActionsKeepMoltScreen(t *testing.T) {
 	m := newModel(backend{CLI: "/bin/sh", Context: context.Background()})
 	m.terminal("-c", "printf 'interactive session\\n'")

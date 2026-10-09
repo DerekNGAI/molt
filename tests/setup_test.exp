@@ -53,6 +53,8 @@ see "CONNECTION / MOLT-VM"
 escape
 see "CONNECTIONS"
 escape
+see "COMMANDS"
+escape
 see "WORKSPACES"
 palette 2
 see "GUIDED SETUP"
@@ -67,6 +69,8 @@ see "SESSION / bootstrap"
 see "SETUP COMPLETE"
 if {![file exists "$env(TUI_TMP)/vm/molt/.install-manifest"]} { puts stderr "FAIL: native setup did not prepare its VM workspace"; exit 1 }
 if {[exec /bin/bash "$env(MOLT_HOME)/bin/molt" config get MOLT_ROOT]!="$env(TUI_TMP)/repos"} { puts stderr "FAIL: project folder was not saved"; exit 1 }
+escape
+see "COMMANDS"
 escape
 see "WORKSPACES"
 palette 9

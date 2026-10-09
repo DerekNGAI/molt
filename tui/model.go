@@ -60,6 +60,7 @@ type model struct {
 	copyNotice                                                                   string
 	cancelAction                                                                 context.CancelFunc
 	menu                                                                         menuState
+	screenBack                                                                   func() tea.Cmd
 	form                                                                         formState
 	dialog                                                                       dialogState
 	editor                                                                       editorState
@@ -728,8 +729,12 @@ func (m *model) overlayKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 	}
 	k := msg.String()
-	if k == "esc" || k == "ctrl+c" {
-		m.overlay = ""
+	if k == "esc" || k == "ctrl+c" || k == "n" && (m.overlay == "cancel" || m.overlay == "quit") {
+		if (m.overlay == "cancel" || m.overlay == "quit") && m.action != "" && m.actionBack != nil {
+			m.overlay = "action"
+		} else {
+			return m.dashboard()
+		}
 		return nil
 	}
 	switch m.overlay {
@@ -762,16 +767,22 @@ func (m *model) overlayKey(msg tea.KeyMsg) tea.Cmd {
 			item := palette()[index]
 			return m.showMessage("Details / "+item.Title, item.Description, func() tea.Cmd { m.overlay, m.paletteIndex = "palette", index; return nil })
 		case "enter":
-			item := palette()[m.paletteIndex]
-			if item.Args[0] == "down" {
-				m.overlay, m.overlayScroll = "down", 0
+			index := m.paletteIndex
+			item := palette()[index]
+			returnTo := func() tea.Cmd {
+				m.overlay, m.paletteIndex, m.overlayScroll = "palette", index, 0
 				return nil
 			}
-			m.overlay = ""
+			if item.Args[0] == "down" {
+				return m.confirm("Stop all workspaces?", "Stop every registered server and flush synchronization?\n\nConnected server sessions will be interrupted.", returnTo, func() tea.Cmd {
+					return m.run(item.Title, returnTo, nil, item.Args...)
+				})
+			}
 			if item.Interactive {
+				m.screenBack = returnTo
 				return m.openScreen(item.Args[0])
 			}
-			return m.startAction(item.Title, item.Args...)
+			return m.run(item.Title, returnTo, nil, item.Args...)
 		}
 	default:
 		switch k {

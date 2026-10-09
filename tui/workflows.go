@@ -51,7 +51,7 @@ func (m *model) openScreen(name string) tea.Cmd {
 		items = append(items, menuItem{"Start all projects", func() tea.Cmd { return m.run("Start all projects", m.screen("projects"), nil, "up") }}, menuItem{"Stop all projects", func() tea.Cmd {
 			return m.confirm("Stop all projects?", "Connected server sessions will be interrupted.", m.screen("projects"), func() tea.Cmd { return m.run("Stop all projects", m.screen("projects"), nil, "down") })
 		}})
-		m.showMenu("Repositories", "Project folder: "+m.inv.Config["MOLT_ROOT"], m.dashboard, items...)
+		m.showMenu("Repositories", "Project folder: "+m.inv.Config["MOLT_ROOT"], m.managementBack, items...)
 		m.menu.Details = append(details, "Start every registered workspace.", "Stop all workspaces and flush synchronization. Confirmation required.")
 		return nil
 	case "connections":
@@ -63,13 +63,13 @@ func (m *model) openScreen(name string) tea.Cmd {
 			host := host
 			items = append(items, menuItem{host, func() tea.Cmd { return m.connectionMenu(host) }})
 		}
-		return m.showMenu("Connections", "Selected: "+m.inv.Config["MOLT_HOST"], m.dashboard, items...)
+		return m.showMenu("Connections", "Selected: "+m.inv.Config["MOLT_HOST"], m.managementBack, items...)
 	case "setup":
 		items := []menuItem{{"Configure a connection", m.screen("connections")}}
 		if host := m.inv.Config["MOLT_HOST"]; host != "" {
 			items = append([]menuItem{{"Use configured connection (" + host + ")", func() tea.Cmd { return m.withConnections([]string{host}, m.screen("setup"), m.setupFolders) }}}, items...)
 		}
-		return m.showMenu("Guided setup", "Connect your VM, choose folders, and prepare Docker.", m.dashboard, items...)
+		return m.showMenu("Guided setup", "Connect your VM, choose folders, and prepare Docker.", m.managementBack, items...)
 	case "opencode":
 		var items []menuItem
 		var details []string
@@ -81,7 +81,7 @@ func (m *model) openScreen(name string) tea.Cmd {
 		if len(items) == 0 {
 			items = append(items, menuItem{"Register a repository first", m.screen("projects")})
 		}
-		m.showMenu("OpenCode projects", "Providers and settings are shared by projects on the same VM workspace.", m.dashboard, items...)
+		m.showMenu("OpenCode projects", "Providers and settings are shared by projects on the same VM workspace.", m.managementBack, items...)
 		m.menu.Details = details
 		return nil
 	case "settings":
@@ -111,7 +111,7 @@ func (m *model) openScreen(name string) tea.Cmd {
 				return m.openScreen("settings")
 			}, "config", "set", "MOLT_ANIMATIONS", value)
 		}}, menuItem{"Shell activation", m.shellMenu})
-		m.showMenu("Settings", "Preferences are saved in this installation.", m.dashboard, items...)
+		m.showMenu("Settings", "Preferences are saved in this installation.", m.managementBack, items...)
 		m.menu.Details = append(details, "Press Enter to turn animations on or off.", "Enable or disable MOLT commands in new Zsh terminals.")
 		return nil
 	case "maintenance":
@@ -119,7 +119,7 @@ func (m *model) openScreen(name string) tea.Cmd {
 	case "uninstall":
 		return m.uninstallMenu()
 	default:
-		return m.showMessage("Unknown screen", name, m.dashboard)
+		return m.showMessage("Unknown screen", name, m.managementBack)
 	}
 }
 
@@ -281,7 +281,7 @@ func (m *model) setupFolders() tea.Cmd {
 			return m.run("Save remote workspace", m.setupFolders, func() tea.Cmd {
 				m.inv.Config["MOLT_ROOT"], m.inv.Config["MOLT_REMOTE_HOME"] = localPath(v[0]), v[1]
 				return m.prepareVM(m.screen("setup"), func() tea.Cmd {
-					return m.showMenu("Setup complete", "Your VM is ready. Register a repository to start its workspace.", m.dashboard, menuItem{"Register repositories", m.screen("projects")}, menuItem{"Enable shell activation", func() tea.Cmd {
+					return m.showMenu("Setup complete", "Your VM is ready. Register a repository to start its workspace.", m.managementBack, menuItem{"Register repositories", m.screen("projects")}, menuItem{"Enable shell activation", func() tea.Cmd {
 						return m.run("Enable shell activation", m.screen("setup"), m.dashboard, "shell", "enable")
 					}}, menuItem{"Open control center", m.dashboard})
 				})
@@ -373,7 +373,7 @@ func (m *model) editServer(p project) tea.Cmd {
 
 func (m *model) maintenanceMenu() tea.Cmd {
 	returnTo := m.screen("maintenance")
-	m.showMenu("Maintenance", "Manage this installation and its recorded resources.", m.dashboard,
+	m.showMenu("Maintenance", "Manage this installation and its recorded resources.", m.managementBack,
 		menuItem{"Tool versions", func() tea.Cmd { return m.run("Tool versions", returnTo, nil, "tools") }},
 		menuItem{"Diagnostics", func() tea.Cmd { return m.run("Diagnostics", returnTo, nil, "doctor") }},
 		menuItem{"Prepare / repair VM", func() tea.Cmd { return m.prepareVM(returnTo, nil) }},
@@ -442,7 +442,7 @@ func (m *model) installFrom(source string, returnTo func() tea.Cmd) tea.Cmd {
 }
 func (m *model) uninstallMenu() tea.Cmd {
 	returnTo := m.screen("uninstall")
-	m.showMenu("Uninstall", "Mac checkouts are kept. Cleanup failures retain retry records.", m.dashboard,
+	m.showMenu("Uninstall", "Mac checkouts are kept. Cleanup failures retain retry records.", m.managementBack,
 		menuItem{"Preview cleanup inventory", func() tea.Cmd {
 			return m.fetch("Cleanup inventory", returnTo, func(data []byte) tea.Cmd {
 				value := strings.TrimSpace(string(data))
