@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -143,29 +142,49 @@ func (m *model) projectMenu(p project) tea.Cmd {
 		{"Open OpenCode", func() tea.Cmd { m.sessionBack = returnTo; return m.terminal("oc-project", "@"+p.ID) }},
 		{"Start", func() tea.Cmd { return m.run("Start "+p.Name, returnTo, nil, "start", "@"+p.ID) }},
 	}
-	for _, verb := range []string{"stop", "restart", "reset"} {
+	for _, verb := range []string{"stop", "restart"} {
 		verb := verb
 		label := strings.ToUpper(verb[:1]) + verb[1:]
-		if verb == "reset" {
-			label = "Remove project"
-		}
 		items = append(items, menuItem{label, func() tea.Cmd {
-			body := "This interrupts the project's server session."
-			if verb == "reset" {
-				body = "Remove its container, image, synchronization, VM mirror, and MOLT state? Your Mac checkout is kept."
-			}
-			return m.confirm(label+" · "+p.Name, body, returnTo, func() tea.Cmd {
-				if verb == "reset" {
-					return m.withConnections([]string{p.Host}, returnTo, func() tea.Cmd {
-						return m.runProgram(label, m.screen("projects"), nil, "env", "MOLT_ASSUME_YES=1", m.b.CLI, verb, "@"+p.ID)
-					})
-				}
+			return m.confirm(label+" · "+p.Name, "This interrupts the project's server session.", returnTo, func() tea.Cmd {
 				return m.run(label+" "+p.Name, returnTo, nil, verb, "@"+p.ID)
 			})
 		}})
 	}
+	items = append(items, menuItem{"Remove project", func() tea.Cmd { return m.removeProjectMenu(p) }})
 	items = append(items, menuItem{"Server logs", func() tea.Cmd { return m.run("Server logs", returnTo, nil, "logs", "@"+p.ID) }}, menuItem{"Synchronization", func() tea.Cmd { return m.run("Synchronization", returnTo, nil, "sync", "@"+p.ID) }}, menuItem{"Providers and settings", func() tea.Cmd { return m.opencodeMenu(p) }})
 	return m.showMenu(p.Name, p.Path+" · "+p.Host, m.screen("projects"), items...)
+}
+
+func (m *model) removeProjectMenu(p project) tea.Cmd {
+	returnTo := func() tea.Cmd { return m.projectMenu(p) }
+	return m.fetch("Project setup state", returnTo, func(data []byte) tea.Cmd {
+		untouched := strings.TrimSpace(string(data)) == "untouched"
+		confirm := func(localOnly bool) tea.Cmd {
+			body := "Remove its local registration? Your Mac checkout is kept."
+			args := []string{"MOLT_ASSUME_YES=1", m.b.CLI, "reset", "@" + p.ID}
+			if !untouched {
+				body = "Remove its container, image, synchronization, VM mirror, and MOLT state? Your Mac checkout is kept."
+			}
+			if localOnly {
+				args = append(args, "--local-only")
+				body = "VM resources may remain running. Remote edits will not be synchronized, and project cleanup records will be deleted. Remove local registration and synchronization anyway? Your Mac checkout is kept."
+			}
+			return m.confirm("Remove project · "+p.Name, body, returnTo, func() tea.Cmd {
+				run := func() tea.Cmd { return m.runProgram("Remove project", m.screen("projects"), nil, "env", args...) }
+				if !localOnly && !untouched {
+					return m.withConnections([]string{p.Host}, func() tea.Cmd { return m.removeProjectMenu(p) }, run)
+				}
+				return run()
+			})
+		}
+		if untouched {
+			return confirm(false)
+		}
+		return m.showMenu("Remove project / "+p.Name, "VM changes are recorded. Local-only removal leaves them behind.", returnTo,
+			menuItem{"Remove project and VM resources", func() tea.Cmd { return confirm(false) }},
+			menuItem{"Remove project locally only", func() tea.Cmd { return confirm(true) }})
+	}, "setup-state", "@"+p.ID)
 }
 
 func (m *model) connectionForm(alias string) tea.Cmd {
@@ -335,9 +354,7 @@ func (m *model) maintenanceMenu() tea.Cmd {
 		menuItem{"Stop local helpers", func() tea.Cmd { return m.run("Stop local helpers", returnTo, nil, "local-down") }},
 		menuItem{"Reset all projects", func() tea.Cmd {
 			return m.confirm("Reset all projects?", "Remove owned project resources and MOLT state. Mac checkouts are kept.", returnTo, func() tea.Cmd {
-				return m.withConnections(m.resourceHosts(), returnTo, func() tea.Cmd {
-					return m.runProgram("Reset all projects", returnTo, nil, "env", "MOLT_ASSUME_YES=1", m.b.CLI, "reset", "--all")
-				})
+				return m.runProgram("Reset all projects", returnTo, nil, "env", "MOLT_ASSUME_YES=1", m.b.CLI, "reset", "--all")
 			})
 		}},
 		menuItem{"Remove empty remote workspaces", func() tea.Cmd {
@@ -373,52 +390,35 @@ func (m *model) uninstallMenu() tea.Cmd {
 		}},
 		menuItem{"Remove MOLT and remote resources", func() tea.Cmd { return m.confirmUninstall(false, false) }},
 		menuItem{"Also undo recorded Docker preparation", func() tea.Cmd { return m.confirmUninstall(false, true) }},
-		menuItem{"Remove this Mac installation only", func() tea.Cmd {
-			return m.showForm("Save cleanup inventory", "Choose a new file outside this installation.", returnTo, func(v []string) tea.Cmd {
-				path, err := filepath.Abs(localPath(v[0]))
-				if err != nil {
-					m.form.Error = err.Error()
-					return nil
-				}
-				parent, err := filepath.EvalSymlinks(filepath.Dir(path))
-				if err != nil {
-					m.form.Error = err.Error()
-					return nil
-				}
-				path = filepath.Join(parent, filepath.Base(path))
-				if path == m.b.Home || strings.HasPrefix(path, m.b.Home+string(os.PathSeparator)) {
-					m.form.Error = "Choose a file outside the installation"
-					return nil
-				}
-				return m.fetch("Cleanup inventory", returnTo, func(data []byte) tea.Cmd {
-					return m.confirm("Remove local installation?", "Remote resources will remain. Save their cleanup inventory to "+path+" and remove this Mac installation.", returnTo, func() tea.Cmd {
-						file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-						if err != nil {
-							return m.showMessage("Cannot save inventory", err.Error(), returnTo)
-						}
-						_, err = file.Write(data)
-						closeErr := file.Close()
-						if err == nil {
-							err = closeErr
-						}
-						if err != nil {
-							return m.showMessage("Cannot save inventory", err.Error(), returnTo)
-						}
-						return m.removeInstallation([]string{"--yes", "--local-only"}, returnTo)
-					})
-				}, "cleanup-inventory")
-			}, formField{Label: "Inventory file", Value: filepath.Join(localPath("~"), "molt-cleanup-"+time.Now().Format("20060102-150405")+".txt")})
-		}})
+		menuItem{"Remove this Mac installation only", func() tea.Cmd { return m.confirmUninstall(true, false) }})
 }
 func (m *model) confirmUninstall(localOnly, undo bool) tea.Cmd {
 	args := []string{"--yes"}
 	if undo {
 		args = append(args, "--undo-vm")
 	}
+	if localOnly {
+		args = append(args, "--local-only")
+	}
 	returnTo := m.screen("uninstall")
-	return m.confirm("Remove MOLT?", "Remove this installation and its owned remote resources. Mac checkouts are kept.", returnTo, func() tea.Cmd {
-		return m.withConnections(m.resourceHosts(), returnTo, func() tea.Cmd { return m.removeInstallation(args, returnTo) })
-	})
+	return m.fetch("Recorded setup state", returnTo, func(data []byte) tea.Cmd {
+		untouched := strings.TrimSpace(string(data)) == "untouched"
+		body := "Remove this Mac installation? Your Mac checkouts are kept."
+		if !untouched {
+			if localOnly {
+				body = "VM resources may remain running, including workspaces, images, caches, provider credentials, SSH authorization, and VM preparation. Remote edits will not be synchronized, and local cleanup records will be deleted. Remove this Mac installation anyway?"
+			} else {
+				body = "Remove this installation and its owned VM resources? Mac checkouts are kept."
+			}
+		}
+		return m.confirm("Remove MOLT?", body, returnTo, func() tea.Cmd {
+			remove := func() tea.Cmd { return m.removeInstallation(args, returnTo) }
+			if !localOnly && !untouched {
+				return m.withConnections(m.resourceHosts(false), returnTo, remove)
+			}
+			return remove()
+		})
+	}, "setup-state")
 }
 func (m *model) removeInstallation(args []string, returnTo func() tea.Cmd) tea.Cmd {
 	if m.queryCancel != nil {
@@ -442,10 +442,16 @@ func contains(values []string, value string) bool {
 	return false
 }
 
-func (m *model) resourceHosts() []string {
+func (m *model) resourceHosts(includeRegistered bool) []string {
 	hosts := map[string]bool{}
 	for _, p := range m.inv.Projects {
-		if p.Host != "" {
+		state := filepath.Join(m.b.Home, "projects", p.ID)
+		setup := readValue(filepath.Join(state, "setup_state"))
+		touched := p.Active || setup != "" && setup != "untouched" || readValue(filepath.Join(state, "sync_created")) == "1"
+		for _, field := range []string{"remote_path", "remote_meta", "remote_home", "remote_opencode_config"} {
+			touched = touched || readValue(filepath.Join(state, field)) != ""
+		}
+		if p.Host != "" && (includeRegistered || touched) {
 			hosts[p.Host] = true
 		}
 	}
@@ -472,7 +478,7 @@ func (m *model) withActionConnections(args []string, returnTo, next func() tea.C
 	}
 	switch args[0] {
 	case "up", "down", "remove-remote-roots":
-		return m.withConnections(m.resourceHosts(), returnTo, next)
+		return m.withConnections(m.resourceHosts(args[0] == "up"), returnTo, next)
 	case "start", "stop", "restart", "logs", "doctor", "remote-oc", "server-config":
 		host := m.inv.Config["MOLT_HOST"]
 		if len(args) > 1 {
@@ -497,7 +503,7 @@ func (m *model) withConnections(hosts []string, returnTo, next func() tea.Cmd) t
 	continueAction := func() tea.Cmd { return m.withConnections(hosts[1:], returnTo, next) }
 	cmd := m.fetch("Check connection / "+host, returnTo, func([]byte) tea.Cmd { return continueAction() }, "connection", "test", host)
 	m.onQueryError = func(err error) tea.Cmd {
-		return m.showMenu("Authentication needed / "+host, err.Error(), returnTo,
+		return m.showMenu("Connection unavailable / "+host, err.Error(), returnTo,
 			menuItem{"Authenticate through SSH", func() tea.Cmd {
 				m.sessionBack = returnTo
 				m.afterSession = func() tea.Cmd { return m.withConnections(hosts, returnTo, next) }

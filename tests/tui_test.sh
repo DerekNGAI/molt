@@ -17,6 +17,8 @@ for tool in mutagen opencode; do
 done
 cat >"$TMP/bin/ssh" <<'SSH'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TUI_TMP/ssh.log"
+[[ ! -f "$TUI_TMP/offline-ssh" ]] || exit 255
 if [[ -f "$TUI_TMP/hold-ssh" && "$*" == *'SSH connection ready'* ]]; then
   printf '%s\n' "$$" >"$TUI_TMP/held.pid"
   sleep 60 & wait

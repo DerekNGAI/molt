@@ -307,16 +307,18 @@ cmd_shell() {
 }
 
 cmd_bootstrap() {
-  local home root record rc
+  local home root record rc field
   molt_owned_home || die 'install molt before preparing a VM'
-  ssh_up
-  home="$(remote_home)"
+  ssh_up || return 1
+  home="$(remote_home)" || return 1
   root="$(expand_remote_path "$MOLT_REMOTE_HOME" "$home")"
   root="$(remote_script validate-root "$root" "$MOLT_INSTALL_ID")" || die 'invalid remote workspace; configuration can be corrected before retrying'
   record="$MOLT_HOME/state/remotes/$(molt_host_key "$MOLT_HOST")"
+  for field in host root setup_state; do managed_file "$record/$field"; done
   [[ ! -f "$record/root" || "$(read_value "$record/root")" == "$root" ]] || die 'clean up the recorded remote workspace before changing its location'
   write_value "$record/host" "$MOLT_HOST"
   write_value "$record/root" "$root"
+  write_value "$record/setup_state" started
   root="$(remote_script stage-bootstrap "$root" "$MOLT_INSTALL_ID")" || return 1
   write_value "$record/root" "$root"
   upload_file "$SCRIPT_DIR/_remote.sh" "$root/state/bootstrap.sh"

@@ -162,9 +162,12 @@ molt_kill_tree() {
 }
 
 molt_stop_workers() {
-  local file pid script process attempt
+  local file pid script process attempt project="${1:-}"
   for file in "$MOLT_HOME/state/tmp"/{run,client,start}.*/parent.pid; do
     [[ -f "$file" ]] || continue
+    if [[ -n "$project" ]]; then
+      [[ -f "${file%/*}/project" && "$(<"${file%/*}/project")" == "$project" ]] || continue
+    fi
     pid="$(<"$file")"
     [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" -gt 1 ]] || return 1
     process="$(ps -p "$pid" -o command= 2>/dev/null || true)"

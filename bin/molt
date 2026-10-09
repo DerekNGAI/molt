@@ -75,6 +75,16 @@ load_project_state() {
   PROJECT_REMOTE_HOME="$(read_value "$state/remote_home" 2>/dev/null || true)"
   PROJECT_SYNC_CREATED="$(read_value "$state/sync_created" 2>/dev/null || { [[ -z "$PROJECT_REMOTE_PATH" ]] && printf 0 || printf 1; })"
   PROJECT_RUNTIME_VERSION="$(read_value "$state/runtime_version" 2>/dev/null || true)"
+  PROJECT_SETUP_STATE="$(read_value "$state/setup_state" 2>/dev/null || true)"
+  case "$PROJECT_SETUP_STATE" in
+    started|complete) ;;
+    ''|untouched)
+      PROJECT_SETUP_STATE=untouched
+      if [[ -n "$PROJECT_REMOTE_PATH$PROJECT_REMOTE_META$PROJECT_REMOTE_HOME$PROJECT_REMOTE_OPENCODE_CONFIG" || "$PROJECT_ACTIVE" != 0 || "$PROJECT_SYNC_CREATED" != 0 || -e "$state/setup_state" && ! -r "$state/setup_state" ]]; then
+        PROJECT_SETUP_STATE=started
+      fi ;;
+    *) PROJECT_SETUP_STATE=started ;;
+  esac
 }
 load_project() {
   local path="${1:-.}"
@@ -100,6 +110,7 @@ save_project() {
   write_value "$PROJECT_STATE/remote_home" "$PROJECT_REMOTE_HOME"
   write_value "$PROJECT_STATE/sync_created" "$PROJECT_SYNC_CREATED"
   write_value "$PROJECT_STATE/runtime_version" "$PROJECT_RUNTIME_VERSION"
+  write_value "$PROJECT_STATE/setup_state" "$PROJECT_SETUP_STATE"
   rm -f "$PROJECT_STATE/"{runtime,package_manager,generated_env,ports,sync_ignores}
 }
 register_project() {
@@ -128,7 +139,35 @@ register_project() {
   PROJECT_SYNC="$PROJECT_CONTAINER" PROJECT_OPENCODE_PORT="$port"
   PROJECT_HOST="$MOLT_CONFIG_HOST" MOLT_HOST="$MOLT_CONFIG_HOST"
   PROJECT_ACTIVE=0 PROJECT_LAYOUT=2 PROJECT_SYNC_CREATED=0 PROJECT_RUNTIME_VERSION=''
+  PROJECT_SETUP_STATE=untouched
   save_project
+}
+cmd_setup_state() {
+  local state candidate result=untouched
+  [[ $# -le 1 ]] || die 'molt setup-state [repo]'
+  if [[ $# == 1 ]]; then
+    load_project "$1" || die 'project is not registered'
+    printf '%s\n' "$PROJECT_SETUP_STATE"
+    return
+  fi
+  for state in "$MOLT_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    load_project_state "${state%/path}" || return 1
+    case "$PROJECT_SETUP_STATE" in
+      started) result=started ;;
+      complete) [[ "$result" != untouched ]] || result=complete ;;
+    esac
+  done
+  for state in "$MOLT_HOME/state/remotes"/*/host; do
+    [[ -f "$state" ]] || continue
+    candidate="$(read_value "${state%/*}/setup_state" 2>/dev/null || printf started)"
+    if [[ "$candidate" != complete ]]; then result=started;
+    elif [[ "$result" == untouched ]]; then result=complete; fi
+  done
+  for state in "$MOLT_HOME/state/ssh/profiles"/*/authorized; do
+    [[ ! -e "$state" && ! -L "$state" ]] || result=started
+  done
+  printf '%s\n' "$result"
 }
 find_project_for_path() {
   local path state project_path best='' best_path=''
@@ -149,7 +188,7 @@ ssh_ok() { [[ -n "$MOLT_HOST" ]] && ssh -O check "$MOLT_HOST" >/dev/null 2>&1; }
 ssh_up() { need ssh; ssh_ok && return 0; ssh -fN "$MOLT_HOST" || { log "ssh $MOLT_HOST failed"; return 1; }; }
 ssh_down() { [[ "${MOLT_UNINSTALLING:-0}" != 1 ]] || return 0; if ssh_ok; then ssh -O exit "$MOLT_HOST"; fi; }
 remote_run() { ssh "$MOLT_HOST" "$1"; }
-remote_home() { ssh_up; remote_run 'printf %s "$HOME"'; }
+remote_home() { ssh_up || return 1; remote_run 'printf %s "$HOME"'; }
 expand_remote_path() {
   local path="$1" home="$2"
   case "$path" in
@@ -160,18 +199,22 @@ expand_remote_path() {
 upload_file() { remote_run "mkdir -p -- $(quote_remote "$(dirname "$2")")"; ssh "$MOLT_HOST" "cat > $(quote_remote "$2")" <"$1"; }
 remote_script() { ssh "$MOLT_HOST" "bash -s -- $(quote_remote "$@")" <"$SCRIPT_DIR/_remote.sh"; }
 cmd_setup() {
-  local root home record
+  local root home record field
   molt_owned_home || die 'install molt before preparing a VM'
-  ssh_up
-  home="$(remote_home)"
+  ssh_up || return 1
+  home="$(remote_home)" || return 1
   root="$(expand_remote_path "${PROJECT_REMOTE_HOME:-$MOLT_REMOTE_HOME}" "$home")"
   root="$(remote_script validate-root "$root" "$MOLT_INSTALL_ID")" || die 'invalid remote workspace; configuration can be corrected before retrying'
   record="$MOLT_HOME/state/remotes/$(molt_host_key "$MOLT_HOST")"
+  for field in host root setup_state; do managed_file "$record/$field"; done
   [[ ! -f "$record/root" || "$(read_value "$record/root")" == "$root" ]] || die 'remote root changed; clean up the recorded root before selecting another'
   write_value "$record/host" "$MOLT_HOST"
   write_value "$record/root" "$root"
+  # Record intent before a remote command: losing SSH does not prove it did nothing.
+  write_value "$record/setup_state" started
   root="$(remote_script setup "$root" "$MOLT_INSTALL_ID")" || die 'remote setup failed; its record is retained'
   write_value "$record/root" "$root"
+  write_value "$record/setup_state" complete
   log "VM ready: $MOLT_HOST:$root"
 }
 set_remote_paths() {
@@ -179,6 +222,7 @@ set_remote_paths() {
   PROJECT_REMOTE_PATH="$PROJECT_REMOTE_HOME/projects/$PROJECT_ID"
   PROJECT_REMOTE_META="$PROJECT_REMOTE_HOME/meta/$PROJECT_ID"
   PROJECT_REMOTE_OPENCODE_CONFIG="$PROJECT_REMOTE_HOME/config/opencode"
+  PROJECT_SETUP_STATE=started
   save_project
 }
 scan_repositories() {
@@ -259,6 +303,7 @@ cmd_start() (
   trap 'exit 143' TERM
   printf '%s\n' "$$" >"$work/parent.pid"
   printf '%s\n' "$0" >"$work/script"
+  write_value "$work/project" "$PROJECT_ID"
   cmd_setup
   load_project "$path" || die 'could not load project state'
   set_remote_paths
@@ -275,13 +320,14 @@ cmd_start() (
   wait_opencode_ready
   forward_opencode_port
   PROJECT_ACTIVE=1 PROJECT_RUNTIME_VERSION="$MOLT_RUNTIME_VERSION"
+  PROJECT_SETUP_STATE=complete
   save_project
   log "$PROJECT_NAME is ready — OpenCode on $MOLT_HOST"
 )
 stop_loaded_project() {
   local running owner sessions
   [[ "$PROJECT_ACTIVE" == 1 || -n "$PROJECT_REMOTE_PATH" ]] || return 0
-  ssh_up
+  ssh_up || return 1
   running="$(remote_run "docker inspect -f '{{.State.Running}}' $(quote_remote "$PROJECT_CONTAINER") 2>/dev/null || true")" || return 1
   if [[ "$running" == true ]]; then
     if [[ "$PROJECT_LAYOUT" == 2 ]]; then
@@ -336,6 +382,7 @@ run_loaded_project() {
   trap 'exit 143' TERM
   printf '%s\n' "$$" >"$tmp/parent.pid"
   printf '%s\n' "$0" >"$tmp/script"
+  write_value "$tmp/project" "$PROJECT_ID"
   ssh ${ssh_flags[@]+"${ssh_flags[@]}"} "$MOLT_HOST" "docker exec ${docker_flags[*]} --workdir $(quote_remote "$container_path") $(quote_remote "$PROJECT_CONTAINER" "$@")" <&0 &
   worker=$!
   wait "$worker" || rc=$?
@@ -383,12 +430,12 @@ cleanup_project_remote() {
   cleanup_project_remote_connected
 }
 terminate_project_sync() {
-  local sessions
+  local sessions local_only="${1:-0}"
   [[ "$PROJECT_SYNC_CREATED" == 1 ]] || return 0
   if [[ "$PROJECT_LAYOUT" == 2 ]]; then
     sessions="$(mutagen sync list --template '{{range .}}{{.Name}}{{"\n"}}{{end}}')" || return 1
     if printf '%s\n' "$sessions" | grep -Fxq "$PROJECT_SYNC"; then
-      if [[ "$(read_value "$PROJECT_STATE/sync_mode" 2>/dev/null || true)" == two-way-safe ]]; then
+      if [[ "$local_only" != 1 && "$(read_value "$PROJECT_STATE/sync_mode" 2>/dev/null || true)" == two-way-safe ]]; then
         mutagen sync resume "$PROJECT_SYNC" || return 1
         flush_project_sync || return 1
       fi
@@ -402,29 +449,68 @@ terminate_project_sync() {
   write_value "$PROJECT_STATE/sync_created" 0
 }
 reset_loaded_project() {
-  # Stop the writer before the final sync so cleanup cannot race server edits.
-  if [[ "$PROJECT_LAYOUT" == 2 ]]; then
-    stop_loaded_project || { log 'could not stop and synchronize the server; retry records retained'; return 1; }
-  fi
-  terminate_project_sync || { log "could not terminate $PROJECT_SYNC; retry records retained"; return 1; }
-  cleanup_project_remote || { log "could not clean $PROJECT_NAME; retry records retained"; return 1; }
+  local local_only="${1:-0}" record field pid previous_state="$PROJECT_SETUP_STATE"
   [[ "$PROJECT_STATE" == "$MOLT_HOME/projects/$PROJECT_ID" && ! -L "$PROJECT_STATE" ]] || return 1
+  managed_file "$PROJECT_STATE"
+  molt_stop_workers "$PROJECT_ID" || { log 'could not stop owned project processes; retry records retained'; return 1; }
+  load_project_state "$PROJECT_STATE" || return 1
+  if [[ -d "$PROJECT_STATE/start.lock" ]]; then
+    pid="$(read_value "$PROJECT_STATE/start.lock/pid" 2>/dev/null || true)"
+    if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]] || kill -0 "$pid" 2>/dev/null; then
+      log 'project startup is still running; cancel it before removing the project'
+      return 1
+    fi
+  fi
+  if [[ "$local_only" == 1 && "$previous_state" == untouched && "$PROJECT_SETUP_STATE" != untouched ]]; then
+    warn_local_project_removal
+    log 'project setup changed during removal; retry to review the warning'
+    return 1
+  fi
+  [[ "$PROJECT_SETUP_STATE" != untouched ]] || local_only=1
+  if [[ "$local_only" == 1 ]]; then
+    if [[ "$PROJECT_SETUP_STATE" != untouched ]]; then
+      record="$MOLT_HOME/state/remotes/$(molt_host_key "$PROJECT_HOST")"
+      for field in host root setup_state; do managed_file "$record/$field"; done
+      write_value "$record/host" "$PROJECT_HOST"
+      [[ -f "$record/root" ]] || write_value "$record/root" "$PROJECT_REMOTE_HOME"
+      [[ -f "$record/setup_state" ]] || write_value "$record/setup_state" started
+    fi
+    terminate_project_sync 1 || { log "could not terminate $PROJECT_SYNC; retry records retained"; return 1; }
+    cancel_project_forwards
+  else
+    # Stop the writer before the final sync so cleanup cannot race server edits.
+    if [[ "$PROJECT_LAYOUT" == 2 ]]; then
+      stop_loaded_project || { log 'could not stop and synchronize the server; retry records retained'; return 1; }
+    fi
+    terminate_project_sync || { log "could not terminate $PROJECT_SYNC; retry records retained"; return 1; }
+    cleanup_project_remote || { log "could not clean $PROJECT_NAME; retry records retained (use molt reset --local-only to remove locally)"; return 1; }
+  fi
   rm -rf -- "$PROJECT_STATE" || return 1
   log "reset $PROJECT_NAME"
 }
 cmd_reset_all() {
-  local state answer failed=0 count=0
-  for state in "$MOLT_PROJECTS_HOME"/*/path; do [[ ! -f "$state" ]] || count=$((count + 1)); done
+  local state answer failed=0 count=0 touched=0 local_only="${1:-0}"
+  for state in "$MOLT_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    count=$((count + 1))
+    load_project_state "${state%/path}" || return 1
+    if [[ "$PROJECT_SETUP_STATE" != untouched ]]; then touched=1; fi
+  done
   [[ "$count" -gt 0 ]] || return 0
+  if [[ "$local_only" == 1 && "$touched" == 1 ]]; then warn_local_project_removal; fi
   if [[ "${MOLT_ASSUME_YES:-0}" == 1 ]]; then answer=y;
-  else printf 'Remove all remote project resources and local molt state? [y/N] '; read -r answer; fi
+  else
+    if [[ "$local_only" == 1 ]]; then printf 'Remove all projects locally only? [y/N] ';
+    else printf 'Remove all project resources and local molt state? [y/N] '; fi
+    read -r answer || return 0
+  fi
   [[ "$answer" == y || "$answer" == Y ]] || return 0
   for state in "$MOLT_PROJECTS_HOME"/*/path; do
     [[ -f "$state" ]] || continue
     load_project_state "${state%/path}" || { failed=1; continue; }
-    reset_loaded_project || failed=1
+    reset_loaded_project "$local_only" || failed=1
   done
-  ssh_down || failed=1
+  if [[ "$local_only" != 1 && "$touched" == 1 ]]; then ssh_down || failed=1; fi
   return "$failed"
 }
 cmd_remove_remote_roots() {
@@ -444,13 +530,31 @@ cmd_remove_remote_roots() {
   return "$failed"
 }
 cmd_reset() {
-  local answer
-  if [[ "${1:-}" == --all ]]; then cmd_reset_all; return $?; fi
-  load_project "${1:-.}" || return 0
+  local answer ref=. has_ref=0 all=0 local_only=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all) all=1 ;;
+      --local-only) local_only=1 ;;
+      -*) die 'molt reset [repo|--all] [--local-only]' ;;
+      *) [[ "$has_ref" == 0 ]] || die 'molt reset [repo|--all] [--local-only]'; ref="$1"; has_ref=1 ;;
+    esac
+    shift
+  done
+  [[ "$all" == 0 || "$has_ref" == 0 ]] || die 'a repository cannot be combined with --all'
+  if [[ "$all" == 1 ]]; then cmd_reset_all "$local_only"; return $?; fi
+  load_project "$ref" || return 0
+  if [[ "$local_only" == 1 && "$PROJECT_SETUP_STATE" != untouched ]]; then warn_local_project_removal; fi
   if [[ "${MOLT_ASSUME_YES:-0}" == 1 ]]; then answer=y;
-  else printf 'Remove the remote container, image, sync, and local molt state for %s? [y/N] ' "$PROJECT_NAME"; read -r answer; fi
+  else
+    if [[ "$local_only" == 1 || "$PROJECT_SETUP_STATE" == untouched ]]; then printf 'Remove local registration and synchronization for %s? [y/N] ' "$PROJECT_NAME";
+    else printf 'Remove the remote container, image, sync, and local molt state for %s? [y/N] ' "$PROJECT_NAME"; fi
+    read -r answer || return 0
+  fi
   [[ "$answer" == y || "$answer" == Y ]] || return 0
-  reset_loaded_project
+  reset_loaded_project "$local_only"
+}
+warn_local_project_removal() {
+  log 'WARNING: VM resources may remain running, and remote edits will not be synchronized. Local-only removal discards project cleanup records; manual VM cleanup may be required.'
 }
 cmd_tui() {
   local screen=''
@@ -497,7 +601,8 @@ molt — remote OpenCode workspaces
   molt logs [repo]             show OpenCode server logs
   molt sync [repo]             show synchronization status and conflicts
   molt monitor [host <alias>|sync]  read machine status for the dashboard
-  molt reset [repo|--all]      remove owned project resources
+  molt reset [repo|--all] [--local-only]  remove project resources, or only local registration and sync
+  molt setup-state [repo]     read recorded VM/project setup state without SSH
   molt tools                  show tool versions
 
   opencode [args]              auto-start and attach in registered repositories
@@ -514,7 +619,7 @@ main() {
   case "$command" in
     tui) cmd_tui "$@" ;; menu) cmd_menu "$@" ;; monitor) cmd_monitor "$@" ;; scan) scan_repositories "${1:-$MOLT_ROOT}" ;;
     project-id) project_id_for_path "${1:-.}" ;; project-find) cmd_project_find "$@" ;; project-active) project_active_for_path "${1:-.}" ;;
-    setup) cmd_setup ;; bootstrap) cmd_bootstrap ;; unprepare-vm) cmd_unprepare_vm ;;
+    setup) cmd_setup ;; setup-state) cmd_setup_state "$@" ;; bootstrap) cmd_bootstrap ;; unprepare-vm) cmd_unprepare_vm ;;
     register) cmd_register "$@" ;; start) cmd_start "$@" ;; stop) cmd_stop_project "$@" ;;
     restart) cmd_stop_project "$@" && cmd_start "$@" ;;
     up) for state in "$MOLT_PROJECTS_HOME"/*/path; do [[ ! -f "$state" ]] || cmd_start "@$(basename "${state%/path}")"; done ;;

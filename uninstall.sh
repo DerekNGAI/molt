@@ -21,21 +21,39 @@ done
 molt_safe_home || exit 1
 [[ -e "$MOLT_HOME" ]] || { printf 'molt: already removed\n'; exit 0; }
 molt_owned_home || exit 1
+warn_local_uninstall() {
+  molt_error 'WARNING: VM resources may remain running. Workspaces, images, caches, provider credentials, SSH authorization, and VM preparation may remain. Remote edits will not be synchronized, and local cleanup records will be deleted.'
+  "$MOLT_HOME/bin/molt" cleanup-inventory
+}
+SETUP_STATE="$("$MOLT_HOME/bin/molt" setup-state)" || exit 1
+if [[ "$LOCAL_ONLY" == 1 && "$SETUP_STATE" != untouched ]]; then
+  warn_local_uninstall || exit 1
+fi
 if [[ "$YES" == 0 ]]; then
-  printf 'Remove molt%s? [y/N] ' "$(if [[ "$LOCAL_ONLY" == 1 ]]; then printf ' locally, leaving remote resources'; else printf ' and its owned remote resources'; fi)"
-  read -r answer
+  printf 'Remove molt%s? [y/N] ' "$(if [[ "$LOCAL_ONLY" == 1 || "$SETUP_STATE" == untouched ]]; then printf ' locally'; else printf ' and its owned remote resources'; fi)"
+  read -r answer || exit 0
   [[ "$answer" == y || "$answer" == Y ]] || exit 0
 fi
 export MOLT_HOME
 molt_stop_workers || { molt_error 'could not stop owned local processes'; exit 1; }
+CURRENT_SETUP_STATE="$("$MOLT_HOME/bin/molt" setup-state)" || exit 1
+if [[ "$LOCAL_ONLY" == 1 && "$SETUP_STATE" == untouched && "$CURRENT_SETUP_STATE" != untouched ]]; then
+  warn_local_uninstall || exit 1
+  if [[ "${MOLT_UI_BATCH:-0}" == 1 ]]; then
+    molt_error 'VM setup changed during removal; retry local-only removal to review the warning'
+    exit 1
+  fi
+  if [[ "$YES" == 0 ]]; then
+    printf 'VM changes were recorded during removal. Remove locally anyway? [y/N] '
+    read -r answer || exit 0
+    [[ "$answer" == y || "$answer" == Y ]] || exit 0
+  fi
+fi
 # Keep Mutagen and SSH available through synchronization, VM, and key cleanup.
 export MOLT_UNINSTALLING=1
-if [[ "$LOCAL_ONLY" == 1 ]]; then
-  printf 'Remote resources left for manual cleanup:\n'
-  "$MOLT_HOME/bin/molt" cleanup-inventory
-else
+if [[ "$LOCAL_ONLY" != 1 ]]; then
   MOLT_ASSUME_YES=1 "$MOLT_HOME/bin/molt" reset --all || {
-    molt_error 'cleanup failed; installation and retry records preserved'; exit 1;
+    molt_error 'cleanup failed; installation and retry records preserved. Use --local-only to remove locally after accepting VM leftovers.'; exit 1;
   }
   if [[ "$UNDO_VM" == 1 ]]; then
     "$MOLT_HOME/bin/molt" remove-remote-roots --keep-root || { molt_error 'shared cleanup failed; installation and retry records retained'; exit 1; }

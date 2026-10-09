@@ -52,7 +52,7 @@ ensure_container() {
 }
 
 ensure_project_container() {
-  ssh_up
+  ssh_up || { log 'VM connection unavailable; use MOLT_LOCAL=1 opencode, molt reset --local-only, or molt menu uninstall for local recovery'; return 1; }
   if [[ "$PROJECT_ACTIVE" != 1 || "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" ]]; then
     log "Starting ${PROJECT_NAME}…"
     cmd_start "@$PROJECT_ID"

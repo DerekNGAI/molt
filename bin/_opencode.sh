@@ -97,6 +97,7 @@ cmd_client() {
   trap 'exit 143' TERM
   printf '%s\n' "$$" >"$tmp/parent.pid"
   printf '%s\n' "$0" >"$tmp/script"
+  if [[ -n "${PROJECT_ID:-}" ]]; then write_value "$tmp/project" "$PROJECT_ID"; fi
   # An interruptible wait lets uninstall stop the client even during process startup.
   molt_client "$@" <&0 &
   client_pid=$!

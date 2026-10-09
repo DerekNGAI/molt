@@ -260,15 +260,33 @@ Cleanup failures preserve the installation and retry records. Reconnect to the V
 or resolve synchronization problems and retry. `molt reset <repo>` removes just
 that project's resources; `molt reset --all` removes all project resources.
 
+Registration and SSH tests do not prepare a project or VM. MOLT records setup as
+untouched, started, or complete, including attempts that may have changed the VM
+before failing. Projects that were only registered can be removed without SSH;
+an installation with no recorded VM changes can also be uninstalled offline.
+Run `molt setup-state [repo]` to inspect this recorded state without contacting a VM.
+
 `molt-uninstall --yes --undo-vm` also reverses MOLT-recorded Docker installation
 and user access when the daemon has no containers or volumes. Existing Docker
 installations and external tools are preserved. Shared Docker base images, build
 cache, and system Docker storage remain under Docker's management; MOLT never runs
 a broad Docker prune.
 
-`--local-only` explicitly leaves VM resources behind and prints their cleanup
-inventory. The TUI saves that inventory to a user-chosen file outside the
-installation. Complete removal is the default.
+When the VM is unavailable, choose **Remove project locally only** in the TUI or
+run `molt reset <repo> --local-only` (`--all` also works). This terminates the
+project's local synchronization without flushing remote edits and removes its
+local registration, so `opencode` no longer routes that project to the VM.
+
+`molt-uninstall --local-only` removes the Mac installation. If VM or project changes
+are recorded, local-only removal warns before confirmation that containers may
+remain running and that VM workspaces, images, caches, provider credentials, SSH
+authorization, and preparation may remain. Partial setup and older resource
+records also trigger this warning. `--yes --local-only` explicitly accepts it for
+non-interactive uninstall; project removal uses `MOLT_ASSUME_YES=1`.
+
+Mac repositories are kept. Local-only removal discards the relevant local cleanup
+records, leaving VM cleanup to you. No inventory file or cleanup script is saved.
+Complete removal is the default when VM changes are recorded.
 
 ## Upgrading
 
@@ -287,6 +305,7 @@ and older layouts.
 bash tests/molt_test.sh
 bash tests/lifecycle_test.sh
 bash tests/manage_test.sh
+bash tests/offline_test.sh
 bash tests/tui_test.sh
 bash tests/dashboard_test.sh
 bash tests/integration_test.sh

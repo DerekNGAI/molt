@@ -185,6 +185,70 @@ func TestScanResultsRemainDistinctUnderLongPaths(t *testing.T) {
 	}
 }
 
+func TestUntouchedRemovalDoesNotCheckSSH(t *testing.T) {
+	m := newModel(backend{Context: context.Background()})
+	p := project{ID: "aaaaaaaaaaaa", Name: "offline", Host: "unreachable-vm"}
+	m.projectMenu(p)
+	for _, item := range m.menu.Items {
+		if item.Title == "Remove project" {
+			item.Run()
+			break
+		}
+	}
+	if m.overlay != "loading" {
+		t.Fatal("removal did not check local setup state first")
+	}
+	m.finishQuery(queryMsg{ID: m.queryID, Data: []byte("untouched\n")})
+	if m.overlay != "confirm" || strings.Contains(m.dialog.Body, "VM resources will remain") {
+		t.Fatal("untouched removal incorrectly warned about VM leftovers")
+	}
+	if m.dialog.Yes == nil {
+		t.Fatal("offline removal has no confirmation action")
+	}
+}
+
+func TestLocalUninstallWarnsWithoutSavingAFile(t *testing.T) {
+	for _, state := range []string{"untouched", "started", "complete"} {
+		m := newModel(backend{Context: context.Background()})
+		m.uninstallMenu()
+		for _, item := range m.menu.Items {
+			if item.Title == "Remove this Mac installation only" {
+				item.Run()
+				break
+			}
+		}
+		if m.overlay != "loading" {
+			t.Fatal("local uninstall still requires saving an external inventory file")
+		}
+		m.finishQuery(queryMsg{ID: m.queryID, Data: []byte(state + "\n")})
+		if m.overlay != "confirm" {
+			t.Fatal("local uninstall did not reach confirmation")
+		}
+		if warned := strings.Contains(m.dialog.Body, "VM resources"); warned != (state != "untouched") {
+			t.Fatalf("incorrect local uninstall warning for %s: %s", state, m.dialog.Body)
+		}
+	}
+}
+
+func TestCompleteUninstallOnlyAuthenticatesHostsWithVMChanges(t *testing.T) {
+	home := t.TempDir()
+	state := filepath.Join(home, "projects", "bbbbbbbbbbbb")
+	if err := os.MkdirAll(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "remote_path"), []byte("/vm/molt/projects/bbbbbbbbbbbb\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(backend{Home: home, Context: context.Background()})
+	m.inv.Projects = []project{{ID: "aaaaaaaaaaaa", Host: "untouched-vm"}, {ID: "bbbbbbbbbbbb", Host: "provisioned-vm"}}
+	m.confirmUninstall(false, false)
+	m.finishQuery(queryMsg{ID: m.queryID, Data: []byte("started\n")})
+	m.dialog.Yes()
+	if m.overlay != "loading" || m.dialog.Title != "Check connection / provisioned-vm" {
+		t.Fatalf("complete uninstall did not authenticate only the provisioned host: %s", m.dialog.Title)
+	}
+}
+
 func TestEmbeddedPTYQueriesInputAndResize(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()

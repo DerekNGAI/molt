@@ -49,6 +49,7 @@ see "CONNECTIONS"
 down 1
 enter
 see "EXISTING SSH ALIASES"
+see "developer@alternate.example:2222"
 down 1
 enter
 see "CONNECTION / ALTERNATE-VM"
@@ -104,6 +105,61 @@ send -- "3"
 see "WORKSPACES"
 stty rows 32 columns 100 < $spawn_out(slave,name)
 after 300
+# Registered-only removal works when every SSH request fails.
+close [open "$env(TUI_TMP)/offline-ssh" w]
+close [open "$env(TUI_TMP)/ssh.log" w]
+palette 0
+see "REPOSITORIES"
+down 3
+enter
+see "SERVICE"
+down 4
+enter
+see "REMOVE PROJECT"
+send -- "n"
+see "SERVICE"
+down 4
+enter
+see "REMOVE PROJECT"
+send -- "y"
+see "COMPLETED"
+enter
+see "REPOSITORIES"
+if {![catch {exec /bin/bash "$env(MOLT_HOME)/bin/molt" project-find "$env(TUI_TMP)/repos/service"}]} { puts stderr "FAIL: offline removal kept registration"; exit 1 }
+set file [open "$env(TUI_TMP)/ssh.log" r]
+set sshlog [read $file]
+close $file
+if {[string first "SSH connection ready" $sshlog]>=0} { puts stderr "FAIL: untouched removal tested SSH"; exit 1 }
+# Previously provisioned projects expose an offline option and warn before removal.
+set id [string trim [exec /bin/bash "$env(MOLT_HOME)/bin/molt" project-find "$env(TUI_TMP)/repos/app"]]
+foreach {field value} [list remote_home /remote/molt remote_path /remote/molt/projects/$id remote_meta /remote/molt/meta/$id] {
+  set file [open "$env(MOLT_HOME)/projects/$id/$field" w]
+  puts $file $value
+  close $file
+}
+down 2
+enter
+see "APP"
+down 4
+enter
+see "Remove project locally only"
+down 1
+enter
+see "VM resources may remain running"
+send -- "n"
+see "APP"
+down 4
+enter
+see "Remove project locally only"
+down 1
+enter
+see "VM resources may remain running"
+send -- "y"
+see "COMPLETED"
+enter
+see "REPOSITORIES"
+escape
+see "WORKSPACES"
 # Destructive actions require an explicit confirmation; cancel preserves state.
 send -- "q"
 expect eof
@@ -120,10 +176,12 @@ see "REMOVE MOLT?"
 send -- "n"
 see "UNINSTALL"
 if {![file exists "$env(MOLT_HOME)"]} { puts stderr "FAIL: cancelled uninstall removed state"; exit 1 }
-down 1
+down 3
 enter
 see "REMOVE MOLT?"
+see "VM resources may remain running"
 send -- "y"
 expect eof
 catch wait result
 if {[lindex $result 3]!=0} { puts stderr "FAIL: native uninstall/terminal restoration returned $result"; exit 1 }
+file delete "$env(TUI_TMP)/offline-ssh"
