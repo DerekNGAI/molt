@@ -532,26 +532,52 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.nativeMouse(msg) {
 			return m, nil
 		}
+		if m.overlay == "resources" {
+			if msg.Button == tea.MouseButtonWheelUp {
+				m.overlayScroll = max(0, m.overlayScroll-1)
+			} else if msg.Button == tea.MouseButtonWheelDown {
+				m.overlayScroll++
+			}
+			return m, nil
+		}
 		if m.overlay != "" || m.searching {
 			return m, nil
 		}
+		if msg.Y < 2 || msg.Y >= m.height-2 {
+			return m, nil
+		}
+		l := m.layout()
+		if l.compact && m.focus == 0 && msg.Y == 2+l.projects-1 {
+			return m, nil
+		}
+		projectY := 2
+		focus := m.focus
+		if !l.compact {
+			projectY += l.top
+			switch {
+			case msg.Y < 2+l.top-1 && msg.X < (m.width-1)/2:
+				focus = 0
+			case msg.Y >= projectY && msg.Y < projectY+l.projects:
+				focus = 2
+			case msg.Y >= projectY+l.projects:
+				focus = 3
+			default:
+				return m, nil
+			}
+		}
 		if msg.Button == tea.MouseButtonWheelUp {
+			m.focus = focus
 			m.move(-1)
 		} else if msg.Button == tea.MouseButtonWheelDown {
+			m.focus = focus
 			m.move(1)
 		} else if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
-			l := m.layout()
-			if msg.Y < 2+l.top {
-				if msg.X < m.width/3 {
-					m.focus = 0
-				} else {
-					m.focus = 1
+			m.focus = focus
+			if focus == 2 {
+				row := msg.Y - projectY - 3
+				if row < max(1, l.projects-4) {
+					m.selectRow(row)
 				}
-			} else if msg.Y < 2+l.top+l.projects {
-				m.focus = 2
-				m.selectRow(msg.Y - (2 + l.top) - 3)
-			} else {
-				m.focus = 3
 			}
 		}
 	case tea.KeyMsg:
@@ -635,28 +661,39 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "tab", "l", "right":
 		m.focus = (m.focus + 1) % 4
+		if m.focus == 1 {
+			m.focus = 2
+		}
 	case "shift+tab", "h", "left":
 		m.focus = (m.focus + 3) % 4
+		if m.focus == 1 {
+			m.focus = 0
+		}
 	case "j", "down":
 		m.move(1)
 	case "k", "up":
 		m.move(-1)
 	case "g", "home":
-		if m.focus == 3 {
-			m.scroll = len(m.output)
+		if m.focus == 0 {
+			m.hostIndex = 0
+		} else if m.focus == 3 {
+			m.scroll = max(0, len(m.activityLines())-max(1, m.layout().bottom-3))
 		} else if list := m.filtered(); len(list) > 0 {
 			m.selected = list[0].ID
 		}
 	case "G", "end":
-		m.scroll = 0
-		if list := m.filtered(); len(list) > 0 {
+		if m.focus == 0 {
+			m.hostIndex = max(0, len(m.inv.Hosts)-1)
+		} else if m.focus == 3 {
+			m.scroll = 0
+		} else if list := m.filtered(); len(list) > 0 {
 			m.selected = list[len(list)-1].ID
 		}
 	case "ctrl+d", "pgdown":
 		m.move(5)
 	case "ctrl+u", "pgup":
 		m.move(-5)
-	case "1", "2", "3", "4":
+	case "1", "3", "4":
 		m.focus = int(k[0] - '1')
 	case "[":
 		m.hostIndex = max(0, m.hostIndex-1)
@@ -680,7 +717,10 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 			return tea.Batch(m.fetchLogs(p.ID), m.animate())
 		}
 	case "enter":
-		if m.focus == 2 {
+		if m.focus == 0 {
+			m.overlay = "resources"
+			m.overlayScroll = 0
+		} else if m.focus == 2 {
 			m.overlay = "detail"
 			m.overlayScroll = 0
 		}
@@ -756,6 +796,34 @@ func (m *model) overlayKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	switch m.overlay {
+	case "resources":
+		switch k {
+		case "j", "down":
+			m.overlayScroll++
+		case "k", "up":
+			m.overlayScroll = max(0, m.overlayScroll-1)
+		case "ctrl+d", "pgdown":
+			m.overlayScroll += 5
+		case "ctrl+u", "pgup":
+			m.overlayScroll = max(0, m.overlayScroll-5)
+		case "home", "g":
+			m.overlayScroll = 0
+		case "end", "G":
+			m.overlayScroll = len(m.resourceLines(max(1, min(90, m.width-4)-4)))
+		case "[", "]":
+			delta := -1
+			if k == "]" {
+				delta = 1
+			}
+			m.hostIndex = max(0, min(max(0, len(m.inv.Hosts)-1), m.hostIndex+delta))
+			m.overlayScroll = 0
+		case "R":
+			return m.poll()
+		case "p":
+			m.paused = !m.paused
+		case "q", "enter":
+			m.overlay = ""
+		}
 	case "help", "detail":
 		switch k {
 		case "j", "down":

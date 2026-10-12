@@ -78,6 +78,30 @@ func (p project) health(h remote) string {
 	return "—"
 }
 
+func (p project) usage(h remote) (string, string) {
+	if h.Error == "" && h.Docker == "ready" {
+		for _, c := range h.Containers {
+			if c.Names == p.Container && c.State == "running" {
+				return containerUsage(c)
+			}
+		}
+	}
+	return "—", "—"
+}
+
+func containerUsage(c container) (string, string) {
+	cpu, memory := "—", "—"
+	if c.State == "running" {
+		if c.CPU != "" {
+			cpu = c.CPU
+		}
+		if c.Memory != "" {
+			memory = c.Memory
+		}
+	}
+	return cpu, memory
+}
+
 type syncEndpoint struct {
 	Connected                        bool `json:"connected"`
 	ScanProblems, TransitionProblems []syncProblem
@@ -215,6 +239,7 @@ func parseRemote(name string, data []byte) (remote, error) {
 			c.Health = "—"
 		}
 	}
+	sort.Slice(h.Containers, func(i, j int) bool { return h.Containers[i].Names < h.Containers[j].Names })
 	return h, nil
 }
 

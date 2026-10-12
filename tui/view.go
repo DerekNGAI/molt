@@ -31,9 +31,10 @@ func (m *model) layout() dimensions {
 	if m.width < 50 || m.height < 24 {
 		return dimensions{projects: available, compact: true}
 	}
-	// The three panels also need two separator rows above the footer.
-	available = max(1, m.height-6)
-	top := 12
+	top := 11
+	if m.height >= 36 {
+		top = 12
+	}
 	if m.height < 30 {
 		top = 8
 	}
@@ -184,33 +185,38 @@ func (m *model) host() remote {
 	return h
 }
 
-func (m *model) metricBody(v, prev metrics, key string, width, height int) string {
+func (m *model) metricBody(v, prev metrics, key string, width, rows int) string {
 	rx, tx := rates(v, prev)
 	lines := []string{
-		text.Render(fit(v.CPUName, width)),
 		gauge("CPU", 0, 0, v.CPU, width),
 		gauge("MEM", v.MemoryUsed, v.MemoryTotal, -1, width),
 		gauge("DISK", v.DiskUsed, v.DiskTotal, -1, width),
 	}
-	if height >= 11 {
+	if rows >= 6 {
+		lines = append([]string{text.Render(fit(v.CPUName, width))}, lines...)
+	}
+	if rows >= 7 {
 		lines = append(lines, muted.Render("CPU  ")+spark(m.history[key], max(3, width-5)))
 	}
-	if height >= 9 {
-		lines = append(lines, muted.Render("NET  ")+text.Render("↓ "+bytes(rx)+"/s  ↑ "+bytes(tx)+"/s"))
+	if rows >= 5 {
+		network := "↓ " + bytes(rx) + "/s  ↑ " + bytes(tx) + "/s"
+		if width >= 43 {
+			network += " · UP " + uptime(v.Uptime)
+		}
+		lines = append(lines, muted.Render("NET  ")+text.Render(network))
 	}
-	if height >= 11 {
-		lines = append(lines, muted.Render("UP   ")+text.Render(uptime(v.Uptime)), muted.Render("LOAD ")+text.Render(v.Load))
+	if rows >= 4 {
+		load := v.Load
+		if load == "" {
+			load = "—"
+		}
+		lines = append(lines, muted.Render("LOAD 1/5/15m ")+text.Render(load))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func (m *model) topView(l dimensions) string {
+func (m *model) vmView(width, height int) string {
 	h := m.host()
-	columns := 3
-	if m.width < 90 {
-		columns = 2
-	}
-	w := (m.width - (columns - 1)) / columns
 	vmTitle := "VM"
 	if h.Name != "" {
 		vmTitle += " / " + h.Name
@@ -220,52 +226,84 @@ func (m *model) topView(l dimensions) string {
 	}
 	vmBody := ""
 	if h.Error != "" {
-		vmBody = status("disconnected") + "\n" + muted.Render(fit(h.Error, w-4)) + "\n\n" + text.Render("c  connect · :  manage")
+		vmBody = status("disconnected") + "\n" + muted.Render(fit(h.Error, width-4)) + "\n" + text.Render("c  connect · :  manage")
 		if !h.Metrics.At.IsZero() {
 			vmBody += "\n" + amber.Render("last sample "+time.Since(h.Metrics.At).Round(time.Second).String()+" ago")
 		}
 	} else {
-		vmBody = green.Render("● connected") + muted.Render(" · "+h.Metrics.Name) + "\n" + m.metricBody(h.Metrics, m.previousRemote[h.Name], h.Name, w-4, l.top-1)
+		vmBody = green.Render("● connected") + muted.Render(" · "+h.Metrics.Name) + "\n" + m.metricBody(h.Metrics, m.previousRemote[h.Name], h.Name, width-4, height-4)
 	}
-	if columns == 2 && l.top >= 12 {
-		vmBody += "\n" + muted.Render(fmt.Sprintf("Docker · %d owned containers", len(h.Containers)))
-	}
-	vm := box(vmTitle, vmBody, w, l.top, m.focus == 0)
-	localBody := text.Render(fit(m.local.OS, w-4)) + "\n" + m.metricBody(m.local, m.previousLocal, "local", w-4, l.top-1)
-	if m.local.Error != "" {
-		localBody = amber.Render(fit(m.local.Error, w-4)) + "\n" + localBody
-	}
+	return box(vmTitle, vmBody, width, height, m.focus == 0)
+}
+
+func (m *model) topView(l dimensions) string {
+	w := (m.width - 1) / 2
+	height := l.top - 1
+	vm := m.vmView(w, height)
 	localWidth := m.width - w - 1
-	if columns == 2 {
-		return lipgloss.JoinHorizontal(lipgloss.Top, vm, " ", box("LOCAL / "+clean(m.local.Name), localBody, localWidth, l.top, m.focus == 1))
+	identity := text.Render(fit(m.local.OS, localWidth-4))
+	if m.local.Error != "" {
+		identity = amber.Render(fit(m.local.Error, localWidth-4))
 	}
-	localWidth = m.width - 2*w - 2
+	localBody := identity + "\n" + m.metricBody(m.local, m.previousLocal, "local", localWidth-4, height-4)
+	local := box("LOCAL / "+clean(m.local.Name), localBody, localWidth, height, false)
+	return lipgloss.JoinHorizontal(lipgloss.Top, vm, " ", local) + "\n" + cell(" "+dockerSummary(m.host()), m.width)
+}
+
+func dockerSummary(h remote) string {
+	label := accent.Render("DOCKER / "+clean(h.Name)) + " · "
+	if h.Error != "" {
+		return label + amber.Render("unknown · VM disconnected")
+	}
+	if h.Docker != "ready" {
+		return label + amber.Render("unavailable")
+	}
 	running := 0
 	for _, c := range h.Containers {
 		if c.State == "running" {
 			running++
 		}
 	}
-	dockerBody := green.Render(fmt.Sprintf("%d running", running)) + "  " + muted.Render(fmt.Sprintf("%d stopped", len(h.Containers)-running)) + "\n" + muted.Render("MOLT containers on selected VM")
+	return label + green.Render(fmt.Sprintf("%d running", running)) + muted.Render(fmt.Sprintf(" · %d stopped · %d total", len(h.Containers)-running, len(h.Containers)))
+}
+
+func (m *model) resourceLines(width int) []string {
+	h := m.host()
+	body := dockerSummary(h)
 	if h.Error != "" {
-		dockerBody = amber.Render("Unknown · VM disconnected") + "\n" + muted.Render("Reconnect to refresh Docker")
+		body += "\n\n" + clean(h.Error) + "\nReconnect to refresh Docker."
 	} else if h.Docker != "ready" {
-		dockerBody = amber.Render("Docker unavailable") + "\n" + muted.Render("Prepare VM from the palette")
+		body += "\n\nPrepare VM from the command palette."
+	} else if len(h.Containers) == 0 {
+		body += "\n\nNo owned containers on this VM."
 	} else {
 		for _, c := range h.Containers {
-			name := c.Names
+			workspace := "unregistered"
 			for _, p := range m.inv.Projects {
-				if p.Container == c.Names {
-					name = p.Name
+				if p.Host == h.Name && p.Container == c.Names {
+					workspace = clean(p.Name)
+					break
 				}
 			}
-			dockerBody += "\n" + cell(text.Render(name), max(3, w-17)) + " " + status(c.State)
-			if c.State == "running" && l.top >= 12 {
-				dockerBody += "\n" + muted.Render("  "+c.CPU+" CPU · "+c.Memory)
-			}
+			cpu, memory := containerUsage(c)
+			body += "\n\n" + text.Render(clean(c.Names)) + " · " + status(c.State) + "\n" + muted.Render("Workspace: "+workspace) + "\nCPU " + cpu + " · MEM " + memory
 		}
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, vm, " ", box("DOCKER / owned resources", dockerBody, w, l.top, m.focus == 1), " ", box("LOCAL / "+clean(m.local.Name), localBody, localWidth, l.top, m.focus == 1))
+	return strings.Split(ansi.Wrap(body, width, ""), "\n")
+}
+
+func (m *model) resourceView() string {
+	w, h := max(8, min(90, m.width-4)), max(5, m.height-6)
+	lines := m.resourceLines(max(1, w-4))
+	rows := max(1, h-4)
+	m.overlayScroll = max(0, min(m.overlayScroll, len(lines)-rows))
+	end := min(len(lines), m.overlayScroll+rows)
+	body := strings.Join(lines[m.overlayScroll:end], "\n")
+	for i := end - m.overlayScroll; i < rows; i++ {
+		body += "\n"
+	}
+	body += "\n" + muted.Render(fmt.Sprintf("%d–%d of %d lines · ↑↓ scroll", m.overlayScroll+1, end, len(lines)))
+	return lipgloss.Place(m.width, max(1, m.height-4), lipgloss.Center, lipgloss.Center, box("DOCKER / "+clean(m.host().Name)+" · owned containers", body, w, h, true))
 }
 
 func (m *model) projectStart() int {
@@ -295,14 +333,17 @@ func (m *model) projectView(l dimensions) string {
 	if len(list) == 0 {
 		return box(title, amber.Render("No matching workspaces · Esc clears the filter"), m.width, l.projects, m.focus == 2)
 	}
-	nameWidth := max(8, min(28, inside/4))
-	hostWidth := max(8, min(20, inside/5))
+	nameWidth := max(8, min(28, inside/5))
+	hostWidth := max(8, min(20, inside/7))
 	stateWidth := 10
 	syncWidth := 14
 	header := cell("PROJECT", nameWidth) + " " + cell("HOST", hostWidth) + " " + cell("CONTAINER", stateWidth) + " " + cell("SYNC", syncWidth)
 	wide := m.width >= 95
 	if wide {
-		header += " " + cell("SERVER", 10) + " PORT"
+		header += " " + cell("SERVER", 10) + " " + cell("CPU", 7) + " " + cell("MEM", 11)
+		if m.width >= 120 {
+			header += " PORT"
+		}
 	}
 	if l.compact || m.width < 65 {
 		header = cell("PROJECT", max(10, inside/2)) + " STATE / SYNC"
@@ -330,7 +371,12 @@ func (m *model) projectView(l dimensions) string {
 		}
 		line := cell(mark+" "+clean(p.Name), nameWidth) + " " + cell(muted.Render(clean(p.Host)), hostWidth) + " " + cell(status(state), stateWidth) + " " + cell(status(sync), syncWidth)
 		if wide {
-			line += " " + cell(status(p.health(h)), 10) + " " + muted.Render(clean(p.Port))
+			cpu, memory := p.usage(h)
+			memory, _, _ = strings.Cut(memory, " / ")
+			line += " " + cell(status(p.health(h)), 10) + " " + cell(text.Render(cpu), 7) + " " + cell(text.Render(memory), 11)
+			if m.width >= 120 {
+				line += " " + muted.Render(clean(p.Port))
+			}
 		}
 		if l.compact || m.width < 65 {
 			line = cell(mark+" "+clean(p.Name), max(10, inside/2)) + " " + status(state) + " / " + status(sync)
@@ -391,6 +437,9 @@ func (m *model) activityView(l dimensions) string {
 }
 
 func (m *model) overlayView() string {
+	if m.overlay == "resources" {
+		return m.resourceView()
+	}
 	if view, ok := m.nativeView(); ok {
 		return view
 	}
@@ -421,6 +470,8 @@ func (m *model) overlayView() string {
 			}
 			body += fmt.Sprintf("\nConflicts  %d", len(s.Conflicts))
 		}
+		cpu, memory := p.usage(m.remotes[p.Host])
+		body += "\nCPU        " + cpu + "\nMemory     " + memory
 	case "stop":
 		title = "STOP WORKSPACE"
 		body = "Stop " + clean(p.Name) + " and flush synchronization?\n\n" + amber.Render("The server session will be interrupted.")
@@ -487,7 +538,9 @@ func (m *model) View() string {
 	if m.overlay != "" {
 		content = m.overlayView()
 	} else if l.compact {
-		if m.focus == 3 {
+		if m.focus == 0 {
+			content = m.vmView(m.width, l.projects-1) + "\n" + cell(" "+dockerSummary(m.host()), m.width)
+		} else if m.focus == 3 {
 			l.bottom = l.projects
 			content = m.activityView(l)
 		} else {
@@ -528,7 +581,7 @@ func keyboardHelp() string {
 		accent.Bold(true).Render("NAVIGATION"),
 		row("Tab · h/l", "Switch panels"),
 		row("Shift-Tab", "Previous panel"),
-		row("1–4", "Focus a panel"),
+		row("1 / 3 / 4", "Focus VM / Workspaces / Activity"),
 		row("↑↓ · j/k", "Move or scroll"),
 		row("g / G", "First / last"),
 		row("Ctrl-D/U", "Page down / up"),
@@ -536,7 +589,7 @@ func keyboardHelp() string {
 		row("Esc", "Back / cancel"),
 		"", accent.Bold(true).Render("WORKSPACES"),
 		row("/", "Filter projects"),
-		row("Enter", "Project details"),
+		row("Enter", "Project details (VM: owned containers)"),
 		row("o", "Attach OpenCode"),
 		row("s", "Start project"),
 		row("S", "Stop (confirm)"),
@@ -550,6 +603,9 @@ func keyboardHelp() string {
 		row("R", "Refresh now"),
 		row("p", "Pause / resume"),
 		row("Y in output", "Copy all retained output"),
+		"", muted.Render("LOAD 1/5/15m: whole-machine load averages; not CPU %."),
+		muted.Render("Compare with logical CPU count for CPU-heavy work."),
+		muted.Render("Linux load also includes uninterruptible waits, often disk I/O."),
 		"", accent.Bold(true).Render("COMMANDS & SESSIONS"),
 		row(": · Ctrl-P · m", "Commands"),
 		row("i in a menu", "Full item details"),
@@ -574,6 +630,8 @@ func (m *model) footer(width int) string {
 		}
 	case m.overlay == "help" || m.overlay == "detail":
 		items = []string{"Esc close", "↑↓ scroll", "Ctrl-D/U page", "Enter close"}
+	case m.overlay == "resources":
+		items = []string{"Esc close", "↑↓ scroll", "[/] VM", "g/G ends", "R refresh", "p pause"}
 	case m.overlay == "message":
 		items = []string{"Esc back", "Y copy", "↑↓ scroll", "Enter back"}
 		if m.dialog.Retry != nil {
@@ -601,9 +659,7 @@ func (m *model) footer(width int) string {
 		}
 		switch m.focus {
 		case 0:
-			items = append(items, "c connect", "[/] VM", "↑↓ select VM")
-		case 1:
-			items = append(items, "R refresh", "p pause")
+			items = append(items, "c connect", "Enter resources", "[/] VM", "↑↓ select VM")
 		case 2:
 			if m.current().ID == "" {
 				items = append(items, "n add repo", "/ filter")
@@ -613,7 +669,7 @@ func (m *model) footer(width int) string {
 		case 3:
 			items = append(items, "↑↓ scroll", "Y copy", "G follow", "a activity")
 		}
-		items = append(items, "q quit", "Tab panels")
+		items = append(items, "q quit", "Tab panels", "R refresh", "p pause")
 	}
 	var parts []string
 	used := 1

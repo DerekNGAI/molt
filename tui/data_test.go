@@ -49,3 +49,26 @@ func TestTerminalInputCannotInjectEscapeSequences(t *testing.T) {
 		t.Fatalf("unsafe terminal text %q", got)
 	}
 }
+
+func TestContainerUsageRequiresCurrentRunningTelemetry(t *testing.T) {
+	p := project{Container: "app"}
+	for _, state := range []struct {
+		docker, failure, runtime, cpu, memory string
+	}{
+		{"ready", "", "running", "125%", "256MiB / 2GiB"},
+		{"ready", "", "running", "", ""},
+		{"ready", "", "exited", "125%", "256MiB / 2GiB"},
+		{"ready", "SSH failed", "running", "125%", "256MiB / 2GiB"},
+		{"unavailable", "", "running", "125%", "256MiB / 2GiB"},
+	} {
+		h := remote{Docker: state.docker, Error: state.failure, Containers: []container{{Names: "app", State: state.runtime, CPU: state.cpu, Memory: state.memory}}}
+		cpu, memory := p.usage(h)
+		if state.docker == "ready" && state.failure == "" && state.runtime == "running" && state.cpu != "" {
+			if cpu != state.cpu || memory != state.memory {
+				t.Fatal("valid usage was lost")
+			}
+		} else if cpu != "—" || memory != "—" {
+			t.Fatal("missing or stale telemetry presented as current usage")
+		}
+	}
+}

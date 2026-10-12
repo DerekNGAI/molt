@@ -148,8 +148,24 @@ separately.
 
 Run `molt` to open a persistent dashboard. It shows local CPU, memory, disk, network
 rates, uptime and load alongside your VMs, MOLT-owned Docker containers, project
-synchronization and OpenCode server health. CPU history appears as sparklines.
-The selected VM's Docker panel includes per-container CPU and memory usage.
+synchronization and OpenCode server health. VM and Local monitors sit above a
+Docker totals line and the workspace table. Local and Docker summaries are passive;
+focus moves between VM, Workspaces, and Activity. CPU history appears as sparklines
+when there is enough room.
+
+The full dashboard's workspace table shows per-container CPU and memory usage at
+95 columns or wider. Enter on a workspace shows full usage, including the memory limit,
+in its scrollable details. Enter on VM opens its complete live container inventory,
+including owned containers without a registered workspace. Use arrows or the mouse
+wheel to scroll, `g`/`G` for the first/last lines, and `[`/`]` to switch VMs. This
+view remains available in small terminals. Escape returns to the dashboard.
+
+**LOAD 1/5/15m** shows the whole machine's load averages over 1, 5, and 15 minutes,
+not a CPU percentage. For CPU-heavy work, compare load with the number of logical
+CPUs: a sustained load of 4 roughly fills four CPUs; higher values suggest queued
+work. Linux also counts tasks in uninterruptible waits, often disk I/O, so load can
+rise without high CPU usage. Local load covers your Mac; VM load covers the entire
+selected VM, including workloads outside MOLT.
 
 Metrics refresh every three seconds, independently of keyboard input. Each VM is
 probed concurrently through authenticated SSH; no monitoring agent is installed.
@@ -171,10 +187,10 @@ existing synchronization continue independently.
 | --- | --- |
 | `h` / `l`, Tab / Shift-Tab | Move panel focus |
 | `j` / `k`, arrows; `g` / `G`; Ctrl-D / Ctrl-U | Move selection or scroll |
-| `1`–`4` | Focus VM, system panels, projects, activity/output |
+| `1`, `3`, `4` | Focus VM, workspaces, activity/output |
 | `[` / `]` | Select a VM |
 | `/`, Enter, Escape | Filter projects, apply, clear |
-| Enter | Inspect selected project |
+| Enter | Inspect selected workspace; on VM, open its owned-container inventory |
 | `s`, `S`, `r` | Start, stop, restart selected project |
 | `o` | Attach OpenCode inside the embedded terminal pane |
 | `L`, `a`, `y` | Server logs, activity, synchronization and conflict recovery |
@@ -248,9 +264,9 @@ to save and Escape to discard, with confirmation for both.
 | Maintenance | Update MOLT, diagnostics, VM preparation, repair, upgrade from checkout, cleanup |
 | Uninstall | Complete removal, optional Docker preparation reversal, local-only removal |
 
-The dashboard adapts to terminal size: wide terminals show three system panels;
-narrow terminals combine the infrastructure overview, and very small terminals
-prioritize the project list. Rounded borders, restrained cyan accents and explicit
+The dashboard adapts to terminal size: VM and Local monitors share the top row,
+with a compact Docker summary below. Very small terminals show the active area:
+VM, workspaces, or activity. Rounded borders, restrained cyan accents and explicit
 focus markers remain readable with color disabled. Disable motion in **Settings →
 Animations**, or save the preference from the CLI:
 
