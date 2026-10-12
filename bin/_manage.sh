@@ -406,13 +406,25 @@ cmd_update() (
 )
 
 cmd_tools() {
-  local name binary
+  local name binary state version pending selected=''
   for name in MUTAGEN OPENCODE; do
-    binary="$(molt_value "$MOLT_HOME/.install-manifest" "${name}_BINARY")"
+    if [[ "$name" == OPENCODE ]] && molt_opencode_managed; then
+      binary="$(managed_opencode_client)" || return 1
+      selected="${binary%/opencode}"; selected="${selected##*/}"
+    else binary="$(molt_value "$MOLT_HOME/.install-manifest" "${name}_BINARY")"; fi
     printf '%s: %s\n' "$name" "$binary"
     if [[ "$name" == MUTAGEN ]]; then molt_isolated "$binary" version; else molt_isolated "$binary" --version; fi
   done
   printf 'TUI: Bubble Tea (%s/bin/molt-tui)\n' "$MOLT_HOME"
+  for state in "$MOLT_PROJECTS_HOME"/*/path; do
+    [[ -f "$state" ]] || continue
+    version="$(read_value "${state%/path}/opencode_version" 2>/dev/null || true)"
+    pending="$(read_value "${state%/path}/opencode_pending" 2>/dev/null || true)"
+    if valid_opencode_version "$version" && valid_opencode_version "$selected" && newer_opencode_version "$selected" "$version"; then pending="$selected"; fi
+    printf 'VM OpenCode: %s — %s' "$(read_value "$state")" "${version:-not detected yet}"
+    [[ -z "$pending" ]] || printf ' (update to %s pending)' "$pending"
+    printf '\n'
+  done
 }
 
 cmd_remote_oc() {

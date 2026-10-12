@@ -166,11 +166,15 @@ resolve_tool() {
     cp -R "$MOLT_HOME/tools/$name" "$STAGE/tools/"
     printf '%s\n' "$MOLT_HOME/tools/$name/$name"; return
   fi
+  # MOLT owns the default OpenCode client so client/server updates stay coordinated.
+  if [[ "$name" == opencode ]]; then download_tool "$name"; return; fi
   binary="$(molt_dependency "$name" || true)"
   if [[ -n "$binary" ]]; then printf '%s\n' "$binary"; else download_tool "$name"; fi
 }
 MUTAGEN_BINARY="$(resolve_tool mutagen "${MOLT_MUTAGEN_BINARY:-}")"
 OPENCODE_BINARY="$(resolve_tool opencode "${MOLT_OPENCODE_BINARY:-}")"
+OPENCODE_MANAGED=1
+[[ -z "${MOLT_OPENCODE_BINARY:-}" ]] || OPENCODE_MANAGED=0
 check_binary() {
   local binary="$1"
   case "$binary" in "$MOLT_HOME/tools/"*) binary="$STAGE/tools/${binary#"$MOLT_HOME/tools/"}" ;; esac
@@ -188,6 +192,7 @@ ROOT=$MOLT_HOME
 STATUS=ready
 MUTAGEN_BINARY=$MUTAGEN_BINARY
 OPENCODE_BINARY=$OPENCODE_BINARY
+OPENCODE_MANAGED=$OPENCODE_MANAGED
 EOF
 # Activation derives its own path, including custom paths with spaces or quotes.
 cat >"$STAGE/activate.zsh" <<'ACTIVATE'

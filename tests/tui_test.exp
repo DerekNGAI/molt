@@ -151,13 +151,13 @@ after 300
 set previous_release [file readlink "$env(MOLT_HOME)/current"]
 palette 5
 see "MAINTENANCE"
-down 6
+down 7
 enter
 see "UPDATE MOLT?"
 send -- "n"
 see "MAINTENANCE"
 if {[file readlink "$env(MOLT_HOME)/current"] != $previous_release} { puts stderr "FAIL: cancelled update replaced the release"; exit 1 }
-down 6
+down 7
 enter
 see "UPDATE MOLT?"
 send -- "y"

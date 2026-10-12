@@ -28,8 +28,9 @@ FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates libstdc++6 && rm -rf /var/lib/apt/lists/*
 RUN git config --system --add safe.directory /workspace
 ARG TARGETARCH
+ARG OPENCODE_VERSION=1.18.34
 COPY tools.lock /tmp/tools.lock
-RUN arch="${TARGETARCH:-$(uname -m)}"; case "$arch" in arm64|aarch64) asset=opencode-linux-arm64.tar.gz ;; amd64|x86_64) asset=opencode-linux-x64-baseline.tar.gz ;; *) printf "molt: unsupported container architecture: %s\n" "$arch" >&2; exit 1 ;; esac; curl -fL "https://github.com/anomalyco/opencode/releases/download/v1.18.34/$asset" -o /tmp/opencode.tar.gz && awk -v asset="$asset" '$2==asset {print $1 "  /tmp/opencode.tar.gz"}' /tmp/tools.lock | sha256sum -c - && mkdir -p /opt/opencode && tar -xzf /tmp/opencode.tar.gz -C /opt/opencode && rm /tmp/opencode.tar.gz
+RUN arch="${TARGETARCH:-$(uname -m)}"; case "$arch" in arm64|aarch64) asset=opencode-linux-arm64.tar.gz ;; amd64|x86_64) asset=opencode-linux-x64-baseline.tar.gz ;; *) printf "molt: unsupported container architecture: %s\n" "$arch" >&2; exit 1 ;; esac; version="${OPENCODE_VERSION:-1.18.34}"; curl -fL "https://github.com/anomalyco/opencode/releases/download/v$version/$asset" -o /tmp/opencode.tar.gz && awk -v asset="$asset" '$2==asset {print $1 "  /tmp/opencode.tar.gz"}' /tmp/tools.lock | sha256sum -c - && mkdir -p /opt/opencode && tar -xzf /tmp/opencode.tar.gz -C /opt/opencode && test "$(/opt/opencode/opencode --version)" = "$version" && rm /tmp/opencode.tar.gz
 RUN node_arch="${TARGETARCH:-$(uname -m)}"; case "$node_arch" in arm64|aarch64) node_arch=arm64 ;; amd64|x86_64) node_arch=x64 ;; *) printf "molt: unsupported Node.js architecture: %s\n" "$node_arch" >&2; exit 1 ;; esac; asset="node-v24.21.0-linux-$node_arch.tar.gz"; curl -fL "https://nodejs.org/dist/v24.21.0/$asset" -o /tmp/node.tar.gz && awk -v asset="$asset" '$2==asset {print $1 "  /tmp/node.tar.gz"}' /tmp/tools.lock | sha256sum -c - && mkdir -p /opt/node && tar -xzf /tmp/node.tar.gz --strip-components=1 -C /opt/node && rm /tmp/node.tar.gz /tmp/tools.lock
 ENV PATH="/opt/opencode:/opt/node/bin:${PATH}"
 WORKDIR /workspace
@@ -60,12 +61,25 @@ ensure_container() {
     fi
     # Recreate only the container; retain workspace, credentials, and session history.
     startup_progress 'Updating container runtime'
+    if molt_opencode_managed && [[ "${PROJECT_OPENCODE_TARGET:-}" != "$PROJECT_OPENCODE_VERSION" ]]; then
+      startup_progress 'Backing up OpenCode session data'
+      managed_file "$PROJECT_STATE/opencode_backup"
+      managed_file "$PROJECT_STATE/opencode_previous_image"
+      remote_run "docker stop $(quote_remote "$PROJECT_CONTAINER") >/dev/null" || return 1
+      local backup
+      if ! backup="$(remote_script opencode-backup "$PROJECT_REMOTE_HOME" "$MOLT_INSTALL_ID" "$PROJECT_ID")"; then
+        remote_run "docker start $(quote_remote "$PROJECT_CONTAINER") >/dev/null" || true
+        die 'could not back up OpenCode data; existing server retained'
+      fi
+      write_value "$PROJECT_STATE/opencode_backup" "$backup"
+      write_value "$PROJECT_STATE/opencode_previous_image" "$image_id"
+    fi
     cancel_project_forwards
     remote_run "docker rm -f $(quote_remote "$PROJECT_CONTAINER")"
   fi
   startup_progress 'Starting container'
   remote_run "docker run -d --init --restart unless-stopped --user $identity --name $(quote_remote "$PROJECT_CONTAINER") \
-    --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.config=$OPENCODE_CONFIG_VERSION --label io.molt.auth=$expected_auth_version \
+    --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.opencode=${PROJECT_OPENCODE_TARGET:-1.18.34} --label io.molt.config=$OPENCODE_CONFIG_VERSION --label io.molt.auth=$expected_auth_version \
     --publish 127.0.0.1:$PROJECT_OPENCODE_PORT:4096 --workdir /workspace \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_PATH,dst=/workspace") \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_META,dst=/molt-meta,readonly") \
@@ -125,7 +139,12 @@ ensure_project_container() {
 ensure_project_container_locked() {
   startup_progress "Connecting to VM · $MOLT_HOST"
   ssh_up || { log 'VM connection unavailable; use MOLT_LOCAL=1 opencode, molt reset --local-only, or molt menu uninstall for local recovery'; return 1; }
-  if [[ "$PROJECT_ACTIVE" != 1 || "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" ]]; then
+  prepare_opencode_version || return 1
+  if [[ "${PROJECT_OPENCODE_DEFERRED:-0}" == 1 ]]; then
+    reuse_opencode_server
+    return
+  fi
+  if [[ "$PROJECT_ACTIVE" != 1 || "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" || -n "${PROJECT_OPENCODE_TARGET:-}" && "$PROJECT_OPENCODE_TARGET" != "$PROJECT_OPENCODE_VERSION" ]]; then
     log "Starting ${PROJECT_NAME}…"
     molt_owned_home || die 'install molt before starting a project'
     start_loaded_project

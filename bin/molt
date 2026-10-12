@@ -21,6 +21,7 @@ MOLT_PROJECTS_HOME="${MOLT_PROJECTS_HOME:-$MOLT_HOME/projects}"
 [[ "$(molt_canonical "$MOLT_PROJECTS_HOME")" == "$MOLT_HOME/projects" ]] || { molt_error 'project state must be under MOLT_HOME/projects'; exit 1; }
 case "$(molt_canonical "$MOLT_OPENCODE_PASSWORD_FILE")" in "$MOLT_HOME/"*) ;; *) molt_error 'password must be inside MOLT_HOME'; exit 1 ;; esac
 MOLT_CONFIG_HOST="$MOLT_HOST"
+unset MOLT_CLIENT_WORK MOLT_RUN_WORK
 MOLT_INSTALL_ID="$(molt_value "$MOLT_HOME/.install-manifest" INSTALL_ID 2>/dev/null || printf development)"
 export MOLT_INSTALL_ID MOLT_SSH_CONFIG="${MOLT_SSH_CONFIG:-}"
 mutagen() { molt_mutagen "$@"; }
@@ -75,6 +76,7 @@ load_project_state() {
   PROJECT_REMOTE_HOME="$(read_value "$state/remote_home" 2>/dev/null || true)"
   PROJECT_SYNC_CREATED="$(read_value "$state/sync_created" 2>/dev/null || { [[ -z "$PROJECT_REMOTE_PATH" ]] && printf 0 || printf 1; })"
   PROJECT_RUNTIME_VERSION="$(read_value "$state/runtime_version" 2>/dev/null || true)"
+  PROJECT_OPENCODE_VERSION="$(read_value "$state/opencode_version" 2>/dev/null || true)"
   PROJECT_SETUP_STATE="$(read_value "$state/setup_state" 2>/dev/null || true)"
   case "$PROJECT_SETUP_STATE" in
     started|complete) ;;
@@ -110,6 +112,10 @@ save_project() {
   write_value "$PROJECT_STATE/remote_home" "$PROJECT_REMOTE_HOME"
   write_value "$PROJECT_STATE/sync_created" "$PROJECT_SYNC_CREATED"
   write_value "$PROJECT_STATE/runtime_version" "$PROJECT_RUNTIME_VERSION"
+  if [[ -n "${PROJECT_OPENCODE_VERSION:-}" ]]; then
+    managed_file "$PROJECT_STATE/opencode_version"
+    write_value "$PROJECT_STATE/opencode_version" "$PROJECT_OPENCODE_VERSION"
+  fi
   write_value "$PROJECT_STATE/setup_state" "$PROJECT_SETUP_STATE"
   rm -f "$PROJECT_STATE/"{runtime,package_manager,generated_env,ports,sync_ignores}
 }
@@ -139,6 +145,7 @@ register_project() {
   PROJECT_SYNC="$PROJECT_CONTAINER" PROJECT_OPENCODE_PORT="$port"
   PROJECT_HOST="$MOLT_CONFIG_HOST" MOLT_HOST="$MOLT_CONFIG_HOST"
   PROJECT_ACTIVE=0 PROJECT_LAYOUT=2 PROJECT_SYNC_CREATED=0 PROJECT_RUNTIME_VERSION=''
+  PROJECT_OPENCODE_VERSION=''
   PROJECT_SETUP_STATE=untouched
   save_project
 }
@@ -360,8 +367,23 @@ cmd_start() (
   path="$(repo_root "${1:-.}")"
   molt_owned_home || die 'install molt before starting a project'
   register_project "$path"
-  with_project_setup_lock start_loaded_project
+  with_project_setup_lock ensure_project_container_locked
 )
+build_project_image() {
+  local work="$1" lock="$SCRIPT_DIR/../tools.lock"
+  local -a args=()
+  dockerfile_for_project "$work/Dockerfile" || return 1
+  if [[ -n "${PROJECT_OPENCODE_TARGET:-}" ]]; then
+    opencode_tools lock "$PROJECT_OPENCODE_TARGET" >"$work/tools.lock" || return 1
+    lock="$work/tools.lock"
+    args=(--build-arg "OPENCODE_VERSION=$PROJECT_OPENCODE_TARGET")
+  fi
+  upload_file "$work/Dockerfile" "$PROJECT_REMOTE_META/Dockerfile" || return 1
+  upload_file "$lock" "$PROJECT_REMOTE_META/tools.lock" || return 1
+  printf '*\n!Dockerfile\n!tools.lock\n' >"$work/.dockerignore"
+  upload_file "$work/.dockerignore" "$PROJECT_REMOTE_META/.dockerignore" || return 1
+  remote_run "docker build ${args:+$(quote_remote "${args[@]}")} --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --tag $(quote_remote "$PROJECT_IMAGE") --file $(quote_remote "$PROJECT_REMOTE_META/Dockerfile") $(quote_remote "$PROJECT_REMOTE_META") >&2"
+}
 start_loaded_project() {
   local path="$PROJECT_PATH" work="$PROJECT_SETUP_WORK"
   [[ "$PROJECT_LAYOUT" == 2 ]] || die 'reset this legacy project before starting it with the contained layout'
@@ -378,10 +400,21 @@ start_loaded_project() {
   sync_opencode_config
   startup_progress 'Building container image'
   log 'First builds download Ubuntu, Node.js and OpenCode; cached builds reuse downloaded layers.'
-  dockerfile_for_project "$work/Dockerfile"
-  upload_file "$work/Dockerfile" "$PROJECT_REMOTE_META/Dockerfile"
-  upload_file "$SCRIPT_DIR/../tools.lock" "$PROJECT_REMOTE_META/tools.lock"
-  remote_run "docker build --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --tag $(quote_remote "$PROJECT_IMAGE") --file $(quote_remote "$PROJECT_REMOTE_META/Dockerfile") $(quote_remote "$PROJECT_REMOTE_META") >&2"
+  if build_project_image "$work"; then :;
+  else
+    local build_status=$?
+    if [[ "${PROJECT_OPENCODE_RUNNING:-false}" == true && -n "${PROJECT_OPENCODE_TARGET:-}" && "$PROJECT_OPENCODE_TARGET" != "$PROJECT_OPENCODE_VERSION" ]]; then
+      log "OpenCode image build failed; retaining the working $PROJECT_OPENCODE_VERSION server."
+      PROJECT_OPENCODE_TARGET="$PROJECT_OPENCODE_VERSION" PROJECT_OPENCODE_DEFERRED=1
+      reuse_opencode_server
+      return
+    fi
+    return "$build_status"
+  fi
+  if molt_opencode_managed && [[ "${PROJECT_OPENCODE_TARGET:-}" != "$PROJECT_OPENCODE_VERSION" ]] && ! recheck_opencode_update; then
+    reuse_opencode_server
+    return
+  fi
   sync_password
   ensure_container
   wait_opencode_ready
@@ -448,9 +481,7 @@ run_loaded_project() {
   local current="$1" container_path tmp worker='' rc=0
   local -a ssh_flags=() docker_flags=(-i)
   shift
-  ensure_project_container
-  container_path="$(container_path_for_pwd "$current")"
-  if [[ -t 0 && -t 1 ]]; then ssh_flags=(-t); docker_flags=(-it); fi
+  molt_state
   tmp="$(mktemp -d "$MOLT_HOME/state/tmp/run.XXXXXX")"
   trap 'if [[ -n "$worker" ]]; then molt_kill_tree "$worker"; wait "$worker" 2>/dev/null || true; fi; rm -rf -- "$tmp"' EXIT
   trap 'exit 130' INT
@@ -458,6 +489,10 @@ run_loaded_project() {
   printf '%s\n' "$$" >"$tmp/parent.pid"
   printf '%s\n' "$0" >"$tmp/script"
   write_value "$tmp/project" "$PROJECT_ID"
+  MOLT_RUN_WORK="$tmp"
+  ensure_project_container
+  container_path="$(container_path_for_pwd "$current")"
+  if [[ -t 0 && -t 1 ]]; then ssh_flags=(-t); docker_flags=(-it); fi
   ssh ${ssh_flags[@]+"${ssh_flags[@]}"} "$MOLT_HOST" "docker exec ${docker_flags[*]} --workdir $(quote_remote "$container_path") $(quote_remote "$PROJECT_CONTAINER" "$@")" <&0 &
   worker=$!
   wait "$worker" || rc=$?
@@ -681,6 +716,7 @@ molt — remote OpenCode workspaces
   molt setup-state [repo]     read recorded VM/project setup state without SSH
   molt tools                  show tool versions
   molt update                 install the latest MOLT from main
+  molt opencode-update        check/download OpenCode; update VMs on their next safe launch
 
   opencode [args]              auto-start and attach in registered repositories
   MOLT_LOCAL=1 opencode        run locally with your normal OpenCode state
@@ -701,7 +737,8 @@ main() {
     restart) cmd_stop_project "$@" && cmd_start "$@" ;;
     up) for state in "$MOLT_PROJECTS_HOME"/*/path; do [[ ! -f "$state" ]] || cmd_start "@$(basename "${state%/path}")"; done ;;
     down) cmd_down ;; status) cmd_status ;; doctor) cmd_doctor ;;
-    config) cmd_config "$@" ;; connection) cmd_connection "$@" ;; shell) cmd_shell "$@" ;; tools) cmd_tools ;; update) cmd_update "$@" ;;
+    config) cmd_config "$@" ;; connection) cmd_connection "$@" ;; shell) cmd_shell "$@" ;; tools) cmd_tools ;; update) cmd_update "$@" ;; opencode-update) cmd_opencode_update "$@" ;;
+    opencode-managed) if molt_opencode_managed; then printf '1\n'; else printf '0\n'; fi ;;
     ui-action) cmd_ui_action "$@" ;; remote-oc) cmd_remote_oc "$@" ;; server-config) cmd_server_config "$@" ;;
     ssh) ssh_up; ssh "$MOLT_HOST" "$@" ;;
     oc|opencode) cmd_oc "$@" ;;

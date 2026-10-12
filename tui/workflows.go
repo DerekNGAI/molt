@@ -375,6 +375,7 @@ func (m *model) maintenanceMenu() tea.Cmd {
 	returnTo := m.screen("maintenance")
 	m.showMenu("Maintenance", "Manage this installation and its recorded resources.", m.managementBack,
 		menuItem{"Tool versions", func() tea.Cmd { return m.run("Tool versions", returnTo, nil, "tools") }},
+		menuItem{"Check OpenCode updates", func() tea.Cmd { return m.run("Check OpenCode updates", returnTo, nil, "opencode-update") }},
 		menuItem{"Diagnostics", func() tea.Cmd { return m.run("Diagnostics", returnTo, nil, "doctor") }},
 		menuItem{"Prepare / repair VM", func() tea.Cmd { return m.prepareVM(returnTo, nil) }},
 		menuItem{"Stop local helpers", func() tea.Cmd { return m.run("Stop local helpers", returnTo, nil, "local-down") }},
@@ -403,6 +404,7 @@ func (m *model) maintenanceMenu() tea.Cmd {
 		menuItem{"Open installation folder", func() tea.Cmd { return m.runProgram("Open Finder", returnTo, nil, "open", m.b.Home) }})
 	m.menu.Details = []string{
 		"Show the installed MOLT, Mutagen, and OpenCode versions.",
+		"Check and download the latest stable OpenCode. VM workspaces update on their next launch when no work or terminals are active.",
 		"Check VM connectivity and workspace health.",
 		"Prepare Docker and repair the owned VM workspace.",
 		"Stop the local SSH and synchronization helpers.",

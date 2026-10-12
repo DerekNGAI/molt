@@ -134,6 +134,10 @@ func TestRealOpenCodeDetachAndResume(t *testing.T) {
 		t.Fatalf("timed out waiting for %s\n%s\n%s", description, data, details)
 	}
 	wait(t, "server health", func() bool { return api("/global/health", nil, nil) == nil })
+	version, idle, err := probeOpenCodeServer(t.Context(), &http.Client{Timeout: 3 * time.Second}, endpoint, "opencode", "fixture-password")
+	if err != nil || !idle || !opencodeVersionPattern.MatchString(version) {
+		t.Fatalf("managed update probe did not recognize the idle real server: %q idle=%v %v", version, idle, err)
+	}
 	eventRequest, _ := http.NewRequest("GET", endpoint+"/global/event", nil)
 	eventRequest.SetBasicAuth("opencode", "fixture-password")
 	eventStream, err := http.DefaultClient.Do(eventRequest)
@@ -247,6 +251,9 @@ func TestRealOpenCodeDetachAndResume(t *testing.T) {
 			master, done, screen := start(t, session.ID)
 			io.WriteString(master, "Keep responding until explicitly stopped.\r")
 			wait(t, "streaming task", func() bool { return status() == "busy" && deltas.Load() > beforeDeltas+1 })
+			if _, idle, err := probeOpenCodeServer(t.Context(), &http.Client{Timeout: 3 * time.Second}, endpoint, "opencode", "fixture-password"); err != nil || idle {
+				t.Fatalf("managed update probe did not protect real running work: idle=%v %v", idle, err)
+			}
 			if mode == "exit" {
 				io.WriteString(master, "/exit")
 				wait(t, "exit command completion", func() bool { return strings.Contains(screen(), "Exit the app") })

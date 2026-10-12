@@ -209,6 +209,22 @@ test_literal_paths() (
   absent "$MOLT_HOME"
 )
 
+test_managed_opencode_install() (
+  source "$ROOT/bin/_molt.sh"
+  export MOLT_HOME="$HOME/managed-opencode"
+  install
+  [[ "$(molt_value "$MOLT_HOME/.install-manifest" OPENCODE_MANAGED)" == 0 ]] || fail 'explicit binary was unexpectedly managed'
+  mkdir -p "$MOLT_HOME/tools/opencode" "$MOLT_HOME/state/opencode/clients/1.18.34"
+  cp "$TMP/bin/opencode" "$MOLT_HOME/tools/opencode/opencode"
+  printf 'keep cached client\n' >"$MOLT_HOME/state/opencode/clients/1.18.34/fixture"
+  unset MOLT_OPENCODE_BINARY
+  install
+  [[ "$(molt_value "$MOLT_HOME/.install-manifest" OPENCODE_MANAGED)" == 1 ]] || fail 'default client is not managed'
+  [[ "$(molt_value "$MOLT_HOME/.install-manifest" OPENCODE_BINARY)" == "$MOLT_HOME/tools/opencode/opencode" ]] || fail 'default installer reused an external client'
+  contains 'keep cached client' "$MOLT_HOME/state/opencode/clients/1.18.34/fixture"
+  [[ -x "$TMP/bin/opencode" ]] || fail 'migration changed the external OpenCode installation'
+)
+
 test_install_lock_and_tool_repair() (
   export MOLT_HOME="$HOME/repair"
   cp "$TMP/bin/mutagen" "$TMP/repair-mutagen"
@@ -791,7 +807,7 @@ GROUP
   absent "$TEST_VM_BIN/docker"
 )
 
-for test in ${*:-test_contained_install test_path_safety test_failed_install_and_upgrade test_checksum_failure_and_interrupted_install test_literal_paths test_install_lock_and_tool_repair test_failed_commit_restores_release test_containment_rejects_symlinks test_local_down_stops_clients test_legacy_shell_migration test_offline_uninstall test_remote_lifecycle test_managed_access test_vm_preparation}; do
+for test in ${*:-test_contained_install test_path_safety test_failed_install_and_upgrade test_checksum_failure_and_interrupted_install test_literal_paths test_managed_opencode_install test_install_lock_and_tool_repair test_failed_commit_restores_release test_containment_rejects_symlinks test_local_down_stops_clients test_legacy_shell_migration test_offline_uninstall test_remote_lifecycle test_managed_access test_vm_preparation}; do
   "$test"
   printf 'PASS: %s\n' "$test"
 done

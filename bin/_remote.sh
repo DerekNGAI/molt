@@ -54,6 +54,22 @@ remove_path() {
 }
 
 case "$action" in
+  opencode-backup)
+    owned
+    id="$1"
+    [[ "$id" =~ ^[a-f0-9]{12}$ ]] || fail 'invalid project identity'
+    source="$root/cache/$id/data/opencode"
+    destination="$root/meta/$id/opencode-backups"
+    for path in "$root/cache/$id" "$root/cache/$id/data" "$source" "$root/meta/$id" "$destination"; do
+      [[ ! -L "$path" && "$(realpath -m -- "$path")" == "$path" ]] || fail 'redirected OpenCode backup directory'
+    done
+    mkdir -p -- "$destination"
+    backup="$(mktemp -d "$destination/version.XXXXXX")"
+    if [[ -d "$source" ]]; then
+      cp -a -- "$source" "$backup/data" || fail "could not back up OpenCode data; partial backup retained in $backup"
+    else mkdir "$backup/data"; fi
+    printf '%s\n' "$backup"
+    ;;
   repair-permissions)
     owned
     id="$1"
