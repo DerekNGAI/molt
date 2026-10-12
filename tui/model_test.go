@@ -362,7 +362,7 @@ func TestCompleteUninstallOnlyAuthenticatesHostsWithVMChanges(t *testing.T) {
 func TestEmbeddedPTYQueriesInputAndResize(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	m := newModel(backend{CLI: "/usr/bin/python3", Context: ctx})
+	m := newModel(backend{CLI: "python3", Context: ctx})
 	code := `import os,tty,select,struct,fcntl,termios
 assert all(os.isatty(fd) for fd in (0,1,2))
 tty.setraw(0)

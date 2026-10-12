@@ -56,7 +56,26 @@ func (m *model) actionSummary() string {
 	if stage == "" {
 		stage = "Starting operation"
 	}
-	return stage + "\nElapsed: " + elapsed(m.actionStarted) + " · step: " + elapsed(m.stageStarted)
+	clock := "Elapsed: " + elapsed(m.actionStarted) + " · step: " + elapsed(m.stageStarted)
+	width := min(86, m.width-8)
+	track := min(18, width-lipgloss.Width(clock)-2)
+	if track >= 6 {
+		clock += "  " + m.progress(track)
+	}
+	return text.Render(stage) + "\n" + muted.Render(clock)
+}
+
+func (m *model) progress(width int) string {
+	if !m.animation {
+		return muted.Render(cell("running…", width))
+	}
+	length := min(6, max(2, width/3))
+	travel := width - length
+	pos := m.frame % (2*travel + 1)
+	if pos > travel {
+		pos = 2*travel - pos
+	}
+	return muted.Render(strings.Repeat("─", pos)) + accent.Render(strings.Repeat("━", length)) + muted.Render(strings.Repeat("─", width-pos-length))
 }
 func cell(s string, width int) string {
 	s = fit(s, width)
@@ -111,20 +130,49 @@ func uptime(seconds uint64) string {
 
 func status(s string) string {
 	switch s {
-	case "ready", "running", "synced", "connected":
-		return green.Render(s)
-	case "conflict", "error", "unhealthy", "exited", "disconnected":
-		return red.Render(s)
-	case "unknown", "connecting", "paused", "unavailable":
-		return amber.Render(s)
+	case "ready", "running", "synced", "connected", "healthy":
+		return green.Render("● " + s)
+	case "conflict", "error", "unhealthy", "disconnected":
+		return red.Render("✕ " + s)
+	case "exited", "stopped", "absent", "not started":
+		return muted.Render("○ " + s)
+	case "unknown", "connecting", "starting", "restarting", "paused", "unavailable":
+		return amber.Render("◐ " + s)
 	case "transferring":
-		return accent.Render(s)
+		return accent.Render("⇅ " + s)
 	default:
 		return muted.Render(s)
 	}
 }
 
+func syncLabel(states map[string]syncState, name, failure string) string {
+	if failure != "" {
+		return "unknown"
+	}
+	if s, ok := states[name]; ok {
+		return s.label()
+	}
+	return "not started"
+}
+
+func (m *model) workspaceStyle(id string) lipgloss.Style {
+	if id == m.current().ID {
+		return selectedStyle
+	}
+	if at, ok := m.changed[id]; ok && m.animation && !m.paused {
+		age := time.Since(at)
+		if age < 750*time.Millisecond {
+			return text.Background(lipgloss.Color("#3D3022"))
+		}
+		if age < 1500*time.Millisecond {
+			return text.Background(lipgloss.Color("#25251F"))
+		}
+	}
+	return lipgloss.NewStyle()
+}
+
 func spark(values []float64, width int) string {
+	width = max(0, width)
 	if len(values) == 0 {
 		return muted.Render(strings.Repeat("─", width))
 	}
@@ -132,15 +180,24 @@ func spark(values []float64, width int) string {
 		values = values[len(values)-width:]
 	}
 	var b strings.Builder
-	b.WriteString(strings.Repeat(" ", max(0, width-len(values))))
 	levels := []rune("▁▂▃▄▅▆▇█")
 	for _, v := range values {
-		b.WriteRune(levels[int(max(0, min(7, math.Round(v/100*7))))])
+		b.WriteString(loadStyle(v).Render(string(levels[int(max(0, min(7, math.Round(v/100*7))))])))
 	}
-	return accent.Render(b.String())
+	return b.String()
 }
 
-func gauge(label string, used, total uint64, percent float64, width int) string {
+func loadStyle(percent float64) lipgloss.Style {
+	if percent > 90 {
+		return red
+	}
+	if percent > 75 {
+		return amber
+	}
+	return accent
+}
+
+func gauge(label string, used, total uint64, percent, shown float64, width int) string {
 	value := "—"
 	if label == "CPU" {
 		if percent >= 0 {
@@ -151,17 +208,17 @@ func gauge(label string, used, total uint64, percent float64, width int) string 
 		value = bytes(float64(used)) + "/" + bytes(float64(total))
 	}
 	n := max(3, min(12, width-6-len(value)))
-	filled := 0
-	if percent >= 0 {
-		filled = int(math.Round(max(0, min(100, percent)) * float64(n) / 100))
+	units := 0
+	if shown >= 0 {
+		units = int(math.Round(max(0, min(100, shown)) * float64(n*8) / 100))
 	}
-	style := accent
-	if percent > 90 {
-		style = red
-	} else if percent > 75 {
-		style = amber
+	filled := units / 8
+	fill := strings.Repeat("█", filled)
+	if part := units % 8; part > 0 {
+		fill += string([]rune("▏▎▍▌▋▊▉")[part-1])
+		filled++
 	}
-	bar := style.Render(strings.Repeat("━", filled)) + muted.Render(strings.Repeat("─", n-filled))
+	bar := loadStyle(percent).Render(fill) + muted.Render(strings.Repeat("─", n-filled))
 	return muted.Render(cell(label, 5)) + bar + " " + text.Render(value)
 }
 
@@ -187,32 +244,39 @@ func (m *model) host() remote {
 
 func (m *model) metricBody(v, prev metrics, key string, width, rows int) string {
 	rx, tx := rates(v, prev)
-	lines := []string{
-		gauge("CPU", 0, 0, v.CPU, width),
-		gauge("MEM", v.MemoryUsed, v.MemoryTotal, -1, width),
-		gauge("DISK", v.DiskUsed, v.DiskTotal, -1, width),
+	shown := m.displayedPercents(key, v)
+	cpu := gauge("CPU", 0, 0, v.CPU, shown[0], width)
+	if v.CPU < 0 {
+		cpu = muted.Render("CPU  ") + accent.Render(m.spinner()+" sampling")
 	}
-	if rows >= 6 {
-		lines = append([]string{text.Render(fit(v.CPUName, width))}, lines...)
+	trendWidth := min(32, width-lipgloss.Width(cpu)-2)
+	inline := trendWidth >= 8
+	if inline {
+		cpu += "  " + spark(m.history[key], trendWidth)
 	}
-	if rows >= 7 {
-		lines = append(lines, muted.Render("CPU  ")+spark(m.history[key], max(3, width-5)))
+	lines := []string{cpu}
+	if !inline && rows >= 5 {
+		lines = append(lines, "     "+spark(m.history[key], min(12, max(0, width-5))))
 	}
-	if rows >= 5 {
+	lines = append(lines, gauge("MEM", v.MemoryUsed, v.MemoryTotal, -1, shown[1], width), gauge("DISK", v.DiskUsed, v.DiskTotal, -1, shown[2], width))
+	if rows-len(lines) >= 2 {
 		network := "↓ " + bytes(rx) + "/s  ↑ " + bytes(tx) + "/s"
 		if width >= 43 {
 			network += " · UP " + uptime(v.Uptime)
 		}
 		lines = append(lines, muted.Render("NET  ")+text.Render(network))
 	}
-	if rows >= 4 {
+	if rows > len(lines) {
 		load := v.Load
 		if load == "" {
 			load = "—"
 		}
 		lines = append(lines, muted.Render("LOAD 1/5/15m ")+text.Render(load))
 	}
-	return strings.Join(lines, "\n")
+	if rows > len(lines) && v.CPUName != "" {
+		lines = append([]string{text.Render(fit(v.CPUName, width))}, lines...)
+	}
+	return strings.Join(lines[:min(len(lines), max(0, rows))], "\n")
 }
 
 func (m *model) vmView(width, height int) string {
@@ -225,13 +289,19 @@ func (m *model) vmView(width, height int) string {
 		vmTitle += fmt.Sprintf(" · %d/%d", m.hostIndex+1, len(m.inv.Hosts))
 	}
 	vmBody := ""
-	if h.Error != "" {
+	if h.Metrics.At.IsZero() && (h.Error == "Waiting for first sample" || h.Error == "" && m.remoteBusy[h.Name]) {
+		vmBody = accent.Render(m.spinner()+" connecting") + "\n" + muted.Render("Waiting for first sample…")
+	} else if h.Error != "" {
 		vmBody = status("disconnected") + "\n" + muted.Render(fit(h.Error, width-4)) + "\n" + text.Render("c  connect · :  manage")
 		if !h.Metrics.At.IsZero() {
 			vmBody += "\n" + amber.Render("last sample "+time.Since(h.Metrics.At).Round(time.Second).String()+" ago")
 		}
 	} else {
-		vmBody = green.Render("● connected") + muted.Render(" · "+h.Metrics.Name) + "\n" + m.metricBody(h.Metrics, m.previousRemote[h.Name], h.Name, width-4, height-4)
+		connection := green
+		if g, ok := m.gauges[h.Name]; ok && m.animation && !m.paused && time.Since(g.At) < 600*time.Millisecond {
+			connection = accent.Bold(true)
+		}
+		vmBody = connection.Render("● connected") + muted.Render(" · "+h.Metrics.Name) + "\n" + m.metricBody(h.Metrics, m.previousRemote[h.Name], h.Name, width-4, height-4)
 	}
 	return box(vmTitle, vmBody, width, height, m.focus == 0)
 }
@@ -242,10 +312,21 @@ func (m *model) topView(l dimensions) string {
 	vm := m.vmView(w, height)
 	localWidth := m.width - w - 1
 	identity := text.Render(fit(m.local.OS, localWidth-4))
+	localMetrics := m.local
+	if m.local.At.IsZero() && m.localBusy {
+		identity = accent.Render(m.spinner() + " reading local metrics…")
+		localMetrics.CPU = -1
+	} else if !m.local.At.IsZero() {
+		pulse := green
+		if g, ok := m.gauges["local"]; ok && m.animation && !m.paused && time.Since(g.At) < 600*time.Millisecond {
+			pulse = accent.Bold(true)
+		}
+		identity = pulse.Render("● ") + identity
+	}
 	if m.local.Error != "" {
 		identity = amber.Render(fit(m.local.Error, localWidth-4))
 	}
-	localBody := identity + "\n" + m.metricBody(m.local, m.previousLocal, "local", localWidth-4, height-4)
+	localBody := identity + "\n" + m.metricBody(localMetrics, m.previousLocal, "local", localWidth-4, height-4)
 	local := box("LOCAL / "+clean(m.local.Name), localBody, localWidth, height, false)
 	return lipgloss.JoinHorizontal(lipgloss.Top, vm, " ", local) + "\n" + cell(" "+dockerSummary(m.host()), m.width)
 }
@@ -333,20 +414,21 @@ func (m *model) projectView(l dimensions) string {
 	if len(list) == 0 {
 		return box(title, amber.Render("No matching workspaces · Esc clears the filter"), m.width, l.projects, m.focus == 2)
 	}
-	nameWidth := max(8, min(28, inside/5))
-	hostWidth := max(8, min(20, inside/7))
-	stateWidth := 10
-	syncWidth := 14
+	nameWidth := max(8, min(28, inside/6))
+	hostWidth := max(8, min(20, inside/8))
+	stateWidth := 12
+	syncWidth := 16
 	header := cell("PROJECT", nameWidth) + " " + cell("HOST", hostWidth) + " " + cell("CONTAINER", stateWidth) + " " + cell("SYNC", syncWidth)
 	wide := m.width >= 95
 	if wide {
-		header += " " + cell("SERVER", 10) + " " + cell("CPU", 7) + " " + cell("MEM", 11)
+		header += " " + cell("SERVER", 12) + " " + cell("CPU", 7) + " " + cell("MEM", 11)
 		if m.width >= 120 {
 			header += " PORT"
 		}
 	}
 	if l.compact || m.width < 65 {
-		header = cell("PROJECT", max(10, inside/2)) + " STATE / SYNC"
+		nameWidth = max(8, min(inside/3, inside-20))
+		header = cell("PROJECT", nameWidth) + " STATE / SYNC"
 	}
 	lines := []string{muted.Render(fit(header, inside))}
 	start := m.projectStart()
@@ -355,35 +437,34 @@ func (m *model) projectView(l dimensions) string {
 		p := list[i]
 		h := m.remotes[p.Host]
 		state := p.runtime(h)
-		sync := "not started"
-		if s, ok := m.syncs[p.Sync]; ok {
-			sync = s.label()
-		}
-		if m.syncError != "" {
-			sync = "unknown"
-		}
+		sync := syncLabel(m.syncs, p.Sync, m.syncError)
 		mark := " "
 		if p.ID == m.current().ID {
 			mark = "›"
 		}
-		if sync == "transferring" {
-			sync = m.spinner() + " transferring"
+		syncText := status(sync)
+		if sync == "transferring" && m.animation && !m.paused {
+			syncText = accent.Render([]string{"⇡", "⇅", "⇣", "⇅"}[m.frame/2%4] + " transferring")
 		}
-		line := cell(mark+" "+clean(p.Name), nameWidth) + " " + cell(muted.Render(clean(p.Host)), hostWidth) + " " + cell(status(state), stateWidth) + " " + cell(status(sync), syncWidth)
+		line := cell(mark+" "+clean(p.Name), nameWidth) + " " + cell(muted.Render(clean(p.Host)), hostWidth) + " " + cell(status(state), stateWidth) + " " + cell(syncText, syncWidth)
 		if wide {
 			cpu, memory := p.usage(h)
 			memory, _, _ = strings.Cut(memory, " / ")
-			line += " " + cell(status(p.health(h)), 10) + " " + cell(text.Render(cpu), 7) + " " + cell(text.Render(memory), 11)
+			line += " " + cell(status(p.health(h)), 12) + " " + cell(text.Render(cpu), 7) + " " + cell(text.Render(memory), 11)
 			if m.width >= 120 {
 				line += " " + muted.Render(clean(p.Port))
 			}
 		}
 		if l.compact || m.width < 65 {
-			line = cell(mark+" "+clean(p.Name), max(10, inside/2)) + " " + status(state) + " / " + status(sync)
+			line = cell(mark+" "+clean(p.Name), nameWidth) + " " + status(state) + " / " + syncText
 		}
-		if p.ID == m.current().ID {
-			line = selectedStyle.Render(cell(line, inside))
+		style := m.workspaceStyle(p.ID)
+		line = cell(line, inside)
+		if _, plain := style.GetBackground().(lipgloss.NoColor); !plain {
+			// Nested status resets would interrupt the full-row background.
+			line = ansi.Strip(line)
 		}
+		line = style.Render(line)
 		lines = append(lines, fit(line, inside))
 	}
 	return box(title, strings.Join(lines, "\n"), m.width, l.projects, m.focus == 2)
@@ -395,7 +476,28 @@ func (m *model) activityLines() []string {
 		lines = m.output
 	} else {
 		for _, e := range m.events {
-			lines = append(lines, muted.Render(e.At.Format("15:04:05"))+"  "+text.Render(e.Text))
+			icon := "·"
+			switch {
+			case strings.Contains(e.Text, "failed"), strings.Contains(e.Text, "disconnected"):
+				icon = red.Render("✗")
+			case strings.Contains(e.Text, "completed"), strings.Contains(e.Text, "connected"):
+				icon = green.Render("✓")
+			case strings.Contains(e.Text, "started"):
+				icon = accent.Render("▶")
+			case strings.Contains(e.Text, "sync"):
+				icon = accent.Render("⇅")
+			}
+			timestamp, message := muted, text
+			if m.animation && !m.paused {
+				age := time.Since(e.At)
+				if age < 2*time.Second {
+					timestamp = accent
+				}
+				if age < 600*time.Millisecond {
+					message = text.Bold(true)
+				}
+			}
+			lines = append(lines, timestamp.Render(e.At.Format("15:04:05"))+"  "+icon+" "+message.Render(e.Text))
 		}
 	}
 	return lines
@@ -518,6 +620,10 @@ func (m *model) View() string {
 	m.copyArea = image.Rectangle{}
 	w := max(1, m.width)
 	right := muted.Render("LIVE · 3s")
+	if m.animation && !m.lastPoll.IsZero() {
+		dots := max(0, min(3, 3-int(time.Since(m.lastPoll)/time.Second)))
+		right = green.Render("LIVE ") + accent.Render(strings.Repeat("●", dots)) + muted.Render(strings.Repeat("○", 3-dots))
+	}
 	if m.paused {
 		right = amber.Render("PAUSED")
 	}
@@ -562,7 +668,11 @@ func (m *model) View() string {
 	if m.action != "" {
 		path = m.action + " · running"
 	}
-	view := header + "\n" + content + "\n" + cell(fit(foot, w), w) + "\n" + muted.Render(cell(" "+clean(path), w))
+	pathLine := muted.Render(cell(" "+clean(path), w))
+	if m.copyNotice != "" && w < 80 {
+		pathLine = cell(" "+m.copyToast(), w)
+	}
+	view := header + "\n" + content + "\n" + cell(fit(foot, w), w) + "\n" + pathLine
 	// A resize can arrive between layout and drawing; clip in terminal cells.
 	lines := strings.Split(view, "\n")
 	if len(lines) > m.height {
@@ -673,21 +783,43 @@ func (m *model) footer(width int) string {
 	}
 	var parts []string
 	used := 1
+	toast := ""
+	if m.copyNotice != "" && width >= 80 {
+		toast = fit(m.copyToast(), width/3)
+		width -= lipgloss.Width(toast) + 2
+	}
+	separator := muted.Render(" · ")
+	if width < 60 {
+		separator = " "
+	}
 	for _, item := range items {
-		n := lipgloss.Width(item)
+		key, action, _ := strings.Cut(item, " ")
+		badge := accent.Bold(true).Background(lipgloss.Color("#22354A")).Render(" " + key + " ")
+		part := badge + muted.Render(action)
+		n := lipgloss.Width(part)
 		if len(parts) > 0 {
-			n += 3
+			n += lipgloss.Width(separator)
 		}
 		if used+n > width {
 			continue
 		}
-		key, action, _ := strings.Cut(item, " ")
-		parts = append(parts, accent.Bold(true).Render(key)+" "+muted.Render(action))
+		parts = append(parts, part)
 		used += n
 	}
-	footer := " " + strings.Join(parts, muted.Render(" · "))
-	if m.copyNotice != "" {
-		footer = " " + text.Render(m.copyNotice) + muted.Render(" · ") + strings.TrimSpace(footer)
+	footer := " " + strings.Join(parts, separator)
+	if toast != "" {
+		footer = cell(footer, width) + "  " + toast
 	}
 	return footer
+}
+
+func (m *model) copyToast() string {
+	style, icon := green.Background(lipgloss.Color("#1B332C")), "✓"
+	if strings.HasPrefix(m.copyNotice, "Copy failed:") {
+		style, icon = red.Background(lipgloss.Color("#3D252E")), "✗"
+	}
+	if m.animation && !m.copyStarted.IsZero() && time.Since(m.copyStarted) >= 2500*time.Millisecond {
+		style = muted.Background(lipgloss.Color("#1A2532"))
+	}
+	return style.Render(" " + icon + " " + m.copyNotice + " ")
 }

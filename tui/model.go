@@ -14,6 +14,7 @@ import (
 
 type pollMsg time.Time
 type frameMsg time.Time
+type idleMsg time.Time
 type inventoryMsg struct{ inventory }
 type localMsg struct{ metrics }
 type remoteMsg struct{ remote }
@@ -49,6 +50,10 @@ type model struct {
 	searching, logs, paused, invBusy, localBusy, syncBusy, logBusy, frameRunning bool
 	remoteBusy                                                                   map[string]bool
 	animation                                                                    bool
+	idleRunning                                                                  bool
+	gauges                                                                       map[string]gaugeTransition
+	changed                                                                      map[string]time.Time
+	lastPoll, copyStarted                                                        time.Time
 	paletteIndex, overlayScroll                                                  int
 	target                                                                       project
 	events                                                                       []event
@@ -89,7 +94,7 @@ func newModel(b backend) *model {
 		b.Context = context.Background()
 	}
 	ctx, cancel := context.WithCancel(b.Context)
-	return &model{b: b, inv: inventory{Config: map[string]string{}}, width: 100, height: 32, remotes: map[string]remote{}, previousRemote: map[string]metrics{}, history: map[string][]float64{}, syncs: map[string]syncState{}, remoteBusy: map[string]bool{}, collectorContext: ctx, collectorCancel: cancel, collectors: &sync.WaitGroup{}, events: []event{{time.Now(), "Control center ready · metrics refresh every 3 seconds"}}}
+	return &model{b: b, inv: inventory{Config: map[string]string{}}, width: 100, height: 32, remotes: map[string]remote{}, previousRemote: map[string]metrics{}, history: map[string][]float64{}, syncs: map[string]syncState{}, remoteBusy: map[string]bool{}, gauges: map[string]gaugeTransition{}, changed: map[string]time.Time{}, collectorContext: ctx, collectorCancel: cancel, collectors: &sync.WaitGroup{}, events: []event{{time.Now(), "Control center ready · metrics refresh every 3 seconds"}}}
 }
 
 func (m *model) collector(cmd tea.Cmd) tea.Cmd {
@@ -118,9 +123,14 @@ func (m *model) Init() tea.Cmd {
 
 func (m *model) animate() tea.Cmd {
 	// Output updates are useful even when decorative motion is disabled.
-	if (m.animation || m.work != "") && !m.frameRunning {
+	delay := m.frameDelay(time.Now())
+	if delay == 100*time.Millisecond && !m.frameRunning {
 		m.frameRunning = true
 		return animationTick()
+	}
+	if delay == time.Second && !m.idleRunning {
+		m.idleRunning = true
+		return tea.Tick(time.Second, func(t time.Time) tea.Msg { return idleMsg(t) })
 	}
 	return nil
 }
@@ -145,6 +155,9 @@ func (m *model) busy() bool {
 func (m *model) poll() tea.Cmd {
 	if m.exclusive || m.installing {
 		return nil
+	}
+	if m.lastPoll.IsZero() {
+		m.lastPoll = time.Now()
 	}
 	var cmds []tea.Cmd
 	b := m.b
@@ -365,16 +378,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.copyNotice = "Copied to clipboard"
+		m.copyStarted = time.Now()
 		if msg.Error != nil {
 			m.copyNotice = "Copy failed: " + clean(msg.Error.Error())
 			m.record(m.copyNotice)
 		}
-		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearClipboardMsg(msg.ID) })
+		return m, tea.Batch(m.animate(), tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearClipboardMsg(msg.ID) }))
 	case clearClipboardMsg:
 		if int(msg) == m.copyID {
 			m.copyNotice = ""
 		}
 	case pollMsg:
+		m.lastPoll = time.Now()
 		if m.work != "" {
 			m.readActionOutput()
 		}
@@ -383,14 +398,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, pollTick()
 	case frameMsg:
-		m.frame++
+		m.frameRunning = false
+		if m.animation {
+			m.frame++
+		}
 		if m.work != "" {
 			m.readActionOutput()
 		}
-		if (m.animation && m.busy()) || m.work != "" {
-			return m, animationTick()
-		}
-		m.frameRunning = false
+		return m, m.animate()
+	case idleMsg:
+		m.idleRunning = false
+		return m, m.animate()
 	case inventoryMsg:
 		m.invBusy = false
 		if msg.Error != "" {
@@ -402,6 +420,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.animation = m.inv.Config["MOLT_ANIMATIONS"] != "0" && os.Getenv("NO_COLOR") == ""
 		m.hostIndex = max(0, min(m.hostIndex, len(m.inv.Hosts)-1))
 		m.selected = m.current().ID
+		for id := range m.changed {
+			found := false
+			for _, p := range m.inv.Projects {
+				if p.ID == id {
+					found = true
+					break
+				}
+			}
+			if !found {
+				delete(m.changed, id)
+			}
+		}
 		if m.startScreen != "" {
 			screen := m.startScreen
 			m.startScreen = ""
@@ -414,6 +444,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.localBusy = false
 		m.previousLocal = m.local
 		m.local = withCPU(msg.metrics, m.local)
+		m.transition("local", m.local)
 		m.addHistory("local", m.local.CPU)
 	case remoteMsg:
 		m.remoteBusy[msg.Name] = false
@@ -429,6 +460,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.previousRemote[msg.Name] = previous.Metrics
 			h.Metrics = withCPU(h.Metrics, previous.Metrics)
+			m.transition(h.Name, h.Metrics)
 			m.addHistory(msg.Name, h.Metrics.CPU)
 			if !exists || previous.Error != "" {
 				m.record(msg.Name + " · SSH connected")
@@ -439,9 +471,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if exists {
+			for _, p := range m.inv.Projects {
+				if p.Host == h.Name && (p.runtime(previous) != p.runtime(h) || p.health(previous) != p.health(h)) {
+					m.changed[p.ID] = time.Now()
+				}
+			}
+		}
 		m.remotes[h.Name] = h
 	case syncMsg:
 		m.syncBusy = false
+		previous, previousError := m.syncs, m.syncError
 		if msg.Error != "" {
 			if m.syncError == "" {
 				m.record("Synchronization: " + msg.Error)
@@ -455,6 +495,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.syncs = msg.States
+		}
+		for _, p := range m.inv.Projects {
+			if syncLabel(previous, p.Sync, previousError) != syncLabel(m.syncs, p.Sync, m.syncError) {
+				m.changed[p.ID] = time.Now()
+			}
 		}
 	case outputMsg:
 		m.logBusy = false
@@ -581,9 +626,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.KeyMsg:
-		return m, m.key(msg)
+		cmd := m.key(msg)
+		return m, tea.Batch(cmd, m.animate())
 	}
-	return m, nil
+	return m, m.animate()
 }
 
 func (m *model) readActionOutput() {

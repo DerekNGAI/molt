@@ -150,8 +150,9 @@ Run `molt` to open a persistent dashboard. It shows local CPU, memory, disk, net
 rates, uptime and load alongside your VMs, MOLT-owned Docker containers, project
 synchronization and OpenCode server health. VM and Local monitors sit above a
 Docker totals line and the workspace table. Local and Docker summaries are passive;
-focus moves between VM, Workspaces, and Activity. CPU history appears as sparklines
-when there is enough room.
+focus moves between VM, Workspaces, and Activity. CPU history sits beside its gauge,
+or directly below it in narrow panels, and grows from the left. Gauges ease toward
+new samples while numeric readings always show the latest measurements.
 
 The full dashboard's workspace table shows per-container CPU and memory usage at
 95 columns or wider. Enter on a workspace shows full usage, including the memory limit,
@@ -182,6 +183,12 @@ the latest 200 server lines, keep your scroll position and resume following with
 `G`. The feed keeps 200 session events; action output is retained in
 `MOLT_HOME/state/ui/last.log`. Monitoring ends when you quit; project servers and
 existing synchronization continue independently.
+
+Connection indicators pulse on fresh samples, workspace state changes briefly
+highlight, and activity icons distinguish starts, successes, and failures. Running
+actions show a moving progress track alongside their elapsed time. Key badges and
+clipboard feedback adapt to the available space. The refresh indicator updates once
+per second while idle; faster frames run only while motion or action output is active.
 
 | Key | Action |
 | --- | --- |

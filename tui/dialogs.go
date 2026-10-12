@@ -121,7 +121,7 @@ func (m *model) fetch(title string, returnTo func() tea.Cmd, done func([]byte) t
 	m.dialog = dialogState{Title: title, Body: body, Back: returnTo, Retry: func() tea.Cmd { return m.fetch(title, returnTo, done, args...) }}
 	b := m.b
 	b.Context = ctx
-	return tea.Batch(queryTick(id), func() tea.Msg {
+	return tea.Batch(m.animate(), queryTick(id), func() tea.Msg {
 		defer cancel()
 		data, err := b.output(30*time.Second, args...)
 		return queryMsg{id, data, err}
@@ -403,7 +403,7 @@ func (m *model) nativeView() (string, bool) {
 			body = fmt.Sprintf("%s (%d/%d)\n%s\n%s", clean(f.Label), m.form.Index+1, len(m.form.Fields), text.Render(ansi.Cut(value, offset, offset+w-4)), red.Render(fit(m.form.Error, w-4)))
 		}
 	case "loading":
-		title, body = m.dialog.Title, m.dialog.Body+"\n\nElapsed: "+elapsed(m.queryStarted)
+		title, body = m.dialog.Title, accent.Render(m.spinner()+" ")+m.dialog.Body+"\n\nElapsed: "+elapsed(m.queryStarted)
 	case "confirm", "message":
 		title, body = m.dialog.Title, m.dialog.Body
 		lines := strings.Split(ansi.Wrap(body, max(1, w-4), ""), "\n")

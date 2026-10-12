@@ -7,6 +7,7 @@ TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/home" "$TMP/bin" "$TMP/repos/app" "$TMP/repos/service"
 GO_BIN="$(command -v go)"
+EXPECT_BIN="$(command -v expect)"
 "$GO_BIN" -C "$ROOT/tui" build -trimpath -o "$TMP/molt-tui" .
 unset MOLT_SSH_CONFIG MOLT_USER_HOME OPENCODE_CONFIG_DIR
 export HOME="$TMP/home" ZDOTDIR="$TMP/home" MOLT_HOME="$TMP/home/.molt" TERM=xterm-256color
@@ -73,7 +74,7 @@ TUI
 chmod +x ../bin/molt-tui
 GO
 chmod +x "$TMP/bin/git" "$TMP/bin/go"
-/usr/bin/expect "$ROOT/tests/tui_test.exp"
+"$EXPECT_BIN" "$ROOT/tests/tui_test.exp"
 [[ ! -e "$MOLT_HOME" ]] || { printf 'FAIL: TUI uninstall left the installation\n' >&2; exit 1; }
 mkdir -p "$TMP/vm"
 cat >"$TMP/bin/ssh" <<'SSH'
@@ -108,6 +109,6 @@ DOCKER
 chmod +x "$TMP/bin/"*
 ssh-keygen -q -t ed25519 -N '' -f "$TMP/login-key"
 export MOLT_HOME="$HOME/from-zero"
-/usr/bin/expect "$ROOT/tests/setup_test.exp"
+"$EXPECT_BIN" "$ROOT/tests/setup_test.exp"
 [[ ! -e "$MOLT_HOME" && ! -e "$TMP/vm/molt" && ! -e "$HOME/.zshrc" ]] || { printf 'FAIL: guided lifecycle left managed resources\n' >&2; exit 1; }
 printf 'molt terminal interaction tests: ok\n'
