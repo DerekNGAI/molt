@@ -361,13 +361,17 @@ func (m *model) resourceLines(width int) []string {
 		for _, c := range h.Containers {
 			workspace := "unregistered"
 			for _, p := range m.inv.Projects {
-				if p.Host == h.Name && p.Container == c.Names {
+				if p.Host == h.Name && (p.Container == c.Names || c.ProjectID == p.ID) {
 					workspace = clean(p.Name)
 					break
 				}
 			}
 			cpu, memory := containerUsage(c)
-			body += "\n\n" + text.Render(clean(c.Names)) + " · " + status(c.State) + "\n" + muted.Render("Workspace: "+workspace) + "\nCPU " + cpu + " · MEM " + memory
+			role := c.Role
+			if role == "" {
+				role = "workspace"
+			}
+			body += "\n\n" + text.Render(clean(c.Names)) + " · " + status(c.State) + "\n" + muted.Render("Repository: "+workspace+" · Role: "+role) + "\nCPU " + cpu + " · MEM " + memory
 		}
 	}
 	return strings.Split(ansi.Wrap(body, width, ""), "\n")
@@ -574,9 +578,10 @@ func (m *model) overlayView() string {
 		}
 		cpu, memory := p.usage(m.remotes[p.Host])
 		body += "\nCPU        " + cpu + "\nMemory     " + memory
+		body += "\n\n" + developmentSummary(m.developments[p.ID]) + "\nD opens the development menu."
 	case "stop":
 		title = "STOP WORKSPACE"
-		body = "Stop " + clean(p.Name) + " and flush synchronization?\n\n" + amber.Render("The server session will be interrupted.")
+		body = "Stop " + clean(p.Name) + " and flush synchronization? Development services, Android, viewer, and app forwards stop. Persistent service/device data is kept.\n\n" + amber.Render("The server session will be interrupted.")
 	case "restart":
 		title = "RESTART WORKSPACE"
 		body = "Stop and restart " + clean(p.Name) + "?\n\n" + amber.Render("The server session will be interrupted.")
@@ -701,6 +706,7 @@ func keyboardHelp() string {
 		row("/", "Filter projects"),
 		row("Enter", "Project details (VM: owned containers)"),
 		row("o", "Attach OpenCode"),
+		row("D", "Development menu / app URLs / Android"),
 		row("s", "Start project"),
 		row("S", "Stop (confirm)"),
 		row("r", "Restart (confirm)"),

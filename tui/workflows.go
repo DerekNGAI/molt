@@ -36,6 +36,15 @@ func (m *model) openScreen(name string) tea.Cmd {
 		m.overlay = "action"
 		return nil
 	}
+	if strings.HasPrefix(name, "development:") {
+		id := strings.TrimPrefix(name, "development:")
+		for _, p := range m.inv.Projects {
+			if p.ID == id && projectID.MatchString(id) {
+				return m.developmentMenu(p, m.managementBack)
+			}
+		}
+		return m.showMessage("Development unavailable", "Choose a registered repository; this project ID is not registered.", m.managementBack)
+	}
 	switch name {
 	case "projects":
 		items := []menuItem{
@@ -169,18 +178,25 @@ func (m *model) projectMenu(p project) tea.Cmd {
 	}
 	items = append(items, menuItem{"Remove project", func() tea.Cmd { return m.removeProjectMenu(p) }})
 	items = append(items, menuItem{"Server logs", func() tea.Cmd { return m.run("Server logs", returnTo, nil, "logs", "@"+p.ID) }}, menuItem{"Synchronization", func() tea.Cmd { return m.syncMenu(p, returnTo, nil) }}, menuItem{"Providers and settings", func() tea.Cmd { return m.opencodeMenu(p) }})
+	items = append(items, menuItem{"Development menu", func() tea.Cmd {
+		snapshot := m.menu
+		return m.developmentMenu(p, func() tea.Cmd { m.menu = snapshot; m.overlay = "native-menu"; return nil })
+	}})
 	return m.showMenu(p.Name, "VM: "+p.Host+"\nLocal: "+p.Path, m.screen("projects"), items...)
 }
 
 func (m *model) removeProjectMenu(p project) tea.Cmd {
 	returnTo := func() tea.Cmd { return m.projectMenu(p) }
+	if m.menu.DevelopmentID == p.ID {
+		returnTo = m.developmentReturn(p)
+	}
 	return m.fetch("Project setup state", returnTo, func(data []byte) tea.Cmd {
 		untouched := strings.TrimSpace(string(data)) == "untouched"
 		confirm := func(localOnly bool) tea.Cmd {
 			body := "Remove its local registration? Your Mac checkout is kept."
 			args := []string{"MOLT_ASSUME_YES=1", m.b.CLI, "reset", "@" + p.ID}
 			if !untouched {
-				body = "Remove its container, image, synchronization, VM mirror, and MOLT state? Your Mac checkout is kept."
+				body = "Synchronize remote edits, then remove its workspace/builder/Android containers, images, app/ADB forwards, viewer, project Nix roots, synchronization, VM mirror, and persistent service/device data? Shared resources remain while other projects use them. Your Mac checkout is kept."
 			}
 			if localOnly {
 				args = append(args, "--local-only")
@@ -459,8 +475,8 @@ func (m *model) uninstallMenu() tea.Cmd {
 		menuItem{"Remove Mac installation only", func() tea.Cmd { return m.confirmUninstall(true, false) }})
 	m.menu.Details = []string{
 		"Review the recorded resources before choosing a removal option.",
-		"Remove this installation and its owned VM resources. Mac checkouts are kept.",
-		"Remove MOLT and VM resources, and undo MOLT-recorded Docker preparation when safe.",
+		"Remove owned workspace/builder/Android resources, persistent service/device data, forwards, private viewer/ADB helpers, and the shared private Nix store. Mac checkouts are kept. Failures retain exact pending cleanup records.",
+		"Remove MOLT and VM resources, and reverse recorded unused Docker/Android preparation when safe. In-use or preexisting preparation is kept and reported.",
 		"Remove only the Mac installation. VM resources may remain running when VM changes are recorded.",
 	}
 	return nil
@@ -479,10 +495,13 @@ func (m *model) confirmUninstall(localOnly, undo bool) tea.Cmd {
 		body := "Remove this Mac installation? Your Mac checkouts are kept."
 		if !untouched {
 			if localOnly {
-				body = "VM resources may remain running, including workspaces, images, caches, provider credentials, SSH authorization, and VM preparation. Remote edits will not be synchronized, and local cleanup records will be deleted. Remove this Mac installation anyway?"
+				body = "VM resources may remain running, including workspaces, builders, Android devices/data, images, shared Nix caches, provider credentials, SSH authorization, and VM preparation. Remote edits will not be synchronized, and local cleanup records will be deleted. Remove this Mac installation anyway?"
 			} else {
-				body = "Remove this installation and its owned VM resources? Mac checkouts are kept."
+				body = "Synchronize remote edits, then remove this installation's owned workspaces/builders/Android devices, persistent service/device data, images, forwards, private viewer/ADB helpers, and shared private Nix store? Mac checkouts are kept. Cleanup failures retain exact remaining-resource records."
 			}
+		}
+		if undo {
+			body += " Recorded unused Docker/Android preparation is reversed when safe; preexisting or in-use preparation is kept and reported."
 		}
 		return m.confirm("Remove MOLT?", body, returnTo, func() tea.Cmd {
 			remove := func() tea.Cmd { return m.removeInstallation(args, returnTo) }
@@ -521,6 +540,9 @@ func (m *model) resourceHosts(includeRegistered bool) []string {
 		state := filepath.Join(m.b.Home, "projects", p.ID)
 		setup := readValue(filepath.Join(state, "setup_state"))
 		touched := p.Active || setup != "" && setup != "untouched" || readValue(filepath.Join(state, "sync_created")) == "1"
+		if _, err := os.Stat(filepath.Join(state, "development.json")); err == nil {
+			touched = true
+		}
 		for _, field := range []string{"remote_path", "remote_meta", "remote_home", "remote_opencode_config"} {
 			touched = touched || readValue(filepath.Join(state, field)) != ""
 		}
@@ -550,6 +572,17 @@ func (m *model) withActionConnections(args []string, returnTo, next func() tea.C
 		return next()
 	}
 	switch args[0] {
+	case "dev":
+		if len(args) >= 3 && (args[2] == "status" || args[2] == "ports" || args[2] == "cache" || len(args) >= 4 && args[2] == "android" && args[3] == "check") {
+			return next()
+		}
+		if len(args) >= 2 {
+			for _, p := range m.inv.Projects {
+				if args[1] == "@"+p.ID && p.Host != "" {
+					return m.withConnections([]string{p.Host}, returnTo, next)
+				}
+			}
+		}
 	case "up", "down", "remove-remote-roots":
 		return m.withConnections(m.resourceHosts(args[0] == "up"), returnTo, next)
 	case "start", "stop", "restart", "logs", "doctor", "remote-oc", "server-config", "sync-resolve", "sync-cycle", "sync-repair":

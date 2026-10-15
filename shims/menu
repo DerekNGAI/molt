@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")/.." && pwd -P)"
+MOLT="${MOLT_HOME:-$HERE}/bin/molt"
+if [[ "${MOLT_LOCAL:-0}" != 1 ]] && project_id="$("$MOLT" project-find "$PWD" 2>/dev/null)"; then
+  exec "$MOLT" dev "@$project_id" menu "$@"
+fi
+# Resolve aliases as well as PATH entries so another link to this shim cannot recurse.
+source "$HERE/bin/_molt.sh"
+self="$(molt_canonical "$0")"
+remaining="${PATH:-}"
+while :; do
+  directory="${remaining%%:*}"
+  candidate="${directory:-.}/menu"
+  if [[ -f "$candidate" && -x "$candidate" ]]; then
+    case "$(molt_canonical "$candidate")" in
+      "$self"|*/shims/*) ;;
+      *) exec "$candidate" "$@" ;;
+    esac
+  fi
+  [[ "$remaining" == *:* ]] || break
+  remaining="${remaining#*:}"
+done
+printf 'molt: menu unavailable outside a registered repository; no local menu executable found\n' >&2
+exit 127

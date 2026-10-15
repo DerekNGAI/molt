@@ -54,6 +54,63 @@ remove_path() {
 }
 
 case "$action" in
+  android-unprepare-stage)
+    owned
+    [[ ! -L "$root/state/android-unprepare.sh" && "$(realpath -m -- "$root/state/android-unprepare.sh")" == "$root/state/android-unprepare.sh" ]] || fail 'redirected Android undo script'
+    printf '%s\n' "$root/state/android-unprepare.sh"
+    ;;
+  development-stage|development-install)
+    owned
+    id="$1"
+    [[ "$id" =~ ^[a-f0-9]{12}$ ]] || fail 'invalid development project identity'
+    for directory in state/development "state/development/$id" "meta/$id/development" "cache/$id/development"; do
+      [[ "$(realpath -m -- "$root/$directory")" == "$root/$directory" && ! -L "$root/$directory" ]] || fail 'redirected development directory'
+      mkdir -p -- "$root/$directory"
+    done
+    if [[ "$action" == development-install ]]; then
+      stage="$2"
+      [[ "$stage" == "$root/state/development/upload.$id."* && "${stage##*/}" != *[!a-zA-Z0-9.-]* && ! -L "$stage" && "$(realpath -m -- "$stage")" == "$stage" ]] || fail 'invalid development upload'
+      for file in development.mjs android.sh development-tools.lock.json; do
+        [[ -f "$stage/$file" && ! -L "$stage/$file" ]] || fail 'incomplete development upload'
+      done
+      for file in development.mjs android.sh; do
+        [[ ! -L "$root/state/development/$file" ]] || fail 'redirected development runner'
+        mv -f -- "$stage/$file" "$root/state/development/$file"
+      done
+      destination="$root/meta/$id/development"
+      [[ ! -L "$destination/development-tools.lock.json" && ! -L "$destination/templates" ]] || fail 'redirected development assets'
+      mv -f -- "$stage/development-tools.lock.json" "$destination/development-tools.lock.json"
+      [[ ! -L "$root/state/development/development-tools.lock.json" ]] || fail 'redirected shared development lock'
+      cp -- "$destination/development-tools.lock.json" "$root/state/development/development-tools.lock.json"
+      mkdir -p -- "$destination/templates"
+      for file in molt.nix menu.mjs GUIDELINE.md generation.md BUILD.md; do
+        [[ -f "$stage/$file" && ! -L "$stage/$file" && ! -L "$destination/templates/$file" ]] || fail 'invalid development template'
+        mv -f -- "$stage/$file" "$destination/templates/$file"
+      done
+      rmdir -- "$stage"
+      exit 0
+    fi
+    container="molt-${owner:0:8}-$id"
+    [[ "$(docker inspect -f '{{index .Config.Labels "io.molt.installation"}}' "$container")" == "$owner" && "$(docker inspect -f '{{index .Config.Labels "io.molt.project"}}' "$container")" == "$id" ]] || fail 'workspace ownership mismatch'
+    for path in "$root/state/development/tools.lock" "$root/state/development/node" "$root/state/development/node.identity"; do
+      [[ ! -L "$path" && "$(realpath -m -- "$path")" == "$path" ]] || fail 'redirected private development tooling'
+    done
+    (
+      flock -x 9
+      if [[ ! -e "$root/state/development/node" ]]; then
+        printf '%s\n' "$(docker inspect -f '{{.Image}}' "$container")" >"$root/state/development/node.identity"
+        temporary="$(mktemp -d "$root/state/development/node.XXXXXX")"
+        docker cp "$container:/opt/node/." "$temporary/" || fail 'could not acquire private VM Node runtime; intent retained'
+        [[ -f "$temporary/bin/node" && ! -L "$temporary/bin/node" && "$("$temporary/bin/node" --version)" == v24.21.0 ]] || fail 'private VM Node version mismatch'
+        sha256sum "$temporary/bin/node" | cut -d ' ' -f1 >>"$root/state/development/node.identity"
+        mv -- "$temporary" "$root/state/development/node"
+      fi
+      [[ -f "$root/state/development/node.identity" && ! -L "$root/state/development/node/bin/node" && "$(realpath -m -- "$root/state/development/node/bin/node")" == "$root/state/development/node/bin/node" ]] || fail 'invalid private Node ownership'
+      expected="$(sed -n '2p' "$root/state/development/node.identity")"
+      [[ "$expected" =~ ^[a-f0-9]{64}$ && "$(sha256sum "$root/state/development/node/bin/node" | cut -d ' ' -f1)" == "$expected" ]] || fail 'private Node executable changed'
+    ) 9>"$root/state/development/tools.lock"
+    mktemp -d "$root/state/development/upload.$id.XXXXXX"
+    ;;
   opencode-backup)
     owned
     id="$1"
@@ -364,7 +421,7 @@ case "$action" in
     done
     for path in "$root/state/"* "$root/state/".[!.]* "$root/state/"..?*; do
       [[ -e "$path" || -L "$path" ]] || continue
-      case "$path" in "$root/state/bootstrap.manifest"|"$root/state/docker-resources") continue ;; esac
+      case "$path" in "$root/state/bootstrap.manifest"|"$root/state/docker-resources") continue ;; "$root/state/android-preparation") [[ "$action" != clean-root ]] || continue ;; esac
       remove_path "$path" || exit 1
     done
     [[ "$action" == remove-root ]] || exit 0

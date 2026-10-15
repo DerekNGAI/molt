@@ -99,6 +99,7 @@ reuse_opencode_server() {
   wait_opencode_ready
   forward_opencode_port
   PROJECT_ACTIVE=1
+  if declare -F development_workspace_ready >/dev/null; then development_workspace_ready || return $?; fi
   save_project
   [[ ! -f "$PROJECT_STATE/opencode_pending" ]] || suffix=' (update deferred)'
   startup_progress "$PROJECT_NAME is ready on $MOLT_HOST · OpenCode $PROJECT_OPENCODE_VERSION$suffix"
@@ -190,21 +191,139 @@ wait_opencode_ready() {
     if [[ "$(read_value "$PROJECT_STATE/opencode_pending" 2>/dev/null || true)" == "$version" ]]; then rm -f "$PROJECT_STATE/opencode_pending"; fi
   fi
 }
-cancel_project_forwards() {
-  local port
-  [[ -f "$PROJECT_STATE/forwards" ]] || return 0
-  while IFS= read -r port; do
-    [[ "$port" =~ ^[0-9]+$ ]] || continue
-    ssh -O cancel -L "127.0.0.1:${port}:127.0.0.1:${port}" "$MOLT_HOST" >/dev/null 2>&1 || true
-  done <"$PROJECT_STATE/forwards"
-  : >"$PROJECT_STATE/forwards"
+molt_forward_master() {
+  local output pid started
+  output="$(ssh -O check "$1" 2>&1)" || return 1
+  [[ "$output" =~ pid=([0-9]+) ]] || { printf 'unknown\n'; return; }
+  pid="${BASH_REMATCH[1]}"
+  started="$(ps -p "$pid" -o lstart= 2>/dev/null)" || return 1
+  printf '%s:%s' "$pid" "$started" | shasum -a 256 | cut -d ' ' -f1
+}
+
+with_molt_forward_lock() (
+  local lock="$MOLT_HOME/state/ssh/forwards.lock" attempt previous acquired=0
+  [[ "$(molt_canonical "$lock")" == "$lock" && ! -L "$lock" ]] || return 1
+  for attempt in {1..300}; do
+    if mkdir "$lock" 2>/dev/null; then acquired=1; break; fi
+    previous="$(read_value "$lock/pid" 2>/dev/null || true)"
+    if [[ "$previous" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$previous" 2>/dev/null; then
+      [[ ! -L "$lock/pid" ]] || return 1
+      rm -f -- "$lock/pid" && rmdir -- "$lock" || return 1
+    else sleep 0.05; fi
+  done
+  [[ "$acquired" == 1 ]] || { molt_error 'forward allocation is locked'; return 1; }
+  trap "rm -f -- $(printf '%q' "$lock/pid"); rmdir -- $(printf '%q' "$lock")" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf '%s\n' "${BASHPID:-$$}" >"$lock/pid"
+  "$@"
+)
+
+molt_forward_rows() {
+  local file="$1" purpose host local_port vm_port state master extra
+  [[ "$(molt_canonical "$file")" == "$file" && ! -L "$file" ]] || return 1
+  [[ -f "$file" ]] || return 0
+  while IFS=$'\t' read -r purpose host local_port vm_port state master extra; do
+    [[ -n "$purpose" ]] || continue
+    if [[ "$purpose" =~ ^[0-9]{1,5}$ && -z "$host" ]]; then
+      valid_port "$purpose" || return 1
+      printf 'opencode\t%s\t%s\t%s\tactive\tunknown\n' "$MOLT_HOST" "$purpose" "$purpose"
+      continue
+    fi
+    [[ "$purpose" == opencode || "$purpose" == adb || "$purpose" =~ ^app:[a-z][a-z0-9-]{0,31}$ ]] &&
+      [[ "$host" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$ && -z "$extra" ]] &&
+      valid_port "$local_port" && ((10#$local_port >= 1024)) && valid_port "$vm_port" &&
+      [[ "$state" == active || "$state" == pending ]] &&
+      [[ "$master" == unknown || "$master" =~ ^[a-f0-9]{64}$ ]] || { molt_error 'invalid forward ownership record'; return 1; }
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$purpose" "$host" "$local_port" "$vm_port" "$state" "$master"
+  done <"$file"
+}
+
+molt_forward_save() {
+  local temporary
+  [[ "$(molt_canonical "$PROJECT_STATE/forwards")" == "$PROJECT_STATE/forwards" && ! -L "$PROJECT_STATE/forwards" ]] || return 1
+  temporary="$(mktemp "$PROJECT_STATE/.forwards.XXXXXX")" || return 1
+  chmod 600 "$temporary" || return 1
+  cat >"$temporary" && mv -f -- "$temporary" "$PROJECT_STATE/forwards"
+}
+
+molt_forward_cancel_locked() {
+  local prefix="$1" rows purpose host local_port vm_port state master kept='' failed=0 line
+  rows="$(molt_forward_rows "$PROJECT_STATE/forwards")" || return 1
+  while IFS=$'\t' read -r purpose host local_port vm_port state master; do
+    [[ -n "$purpose" ]] || continue
+    printf -v line '%s\t%s\t%s\t%s\t%s\t%s' "$purpose" "$host" "$local_port" "$vm_port" "$state" "$master"
+    if [[ "$purpose" == "$prefix"* ]]; then
+      if ssh -O cancel -L "127.0.0.1:$local_port:127.0.0.1:$vm_port" "$host" >/dev/null 2>&1; then continue; fi
+      # A vanished master has no forwards. A live master's failure needs a retry.
+      if ! ssh -O check "$host" >/dev/null 2>&1; then continue; fi
+      failed=1
+    fi
+    kept="${kept}${line}"$'\n'
+  done <<<"$rows"
+  printf '%s' "$kept" | molt_forward_save || return 1
+  [[ "$failed" == 0 ]] || { molt_error 'could not cancel owned forward; record retained'; return 1; }
+}
+molt_forward_cancel() { [[ -e "$PROJECT_STATE/forwards" || -L "$PROJECT_STATE/forwards" ]] || return 0; with_molt_forward_lock molt_forward_cancel_locked "$1"; }
+cancel_project_forwards() { molt_forward_cancel ''; }
+
+molt_forward_allocate_locked() {
+  local purpose="$1" preferred="$2" vm_port="$3" fixed="${4:-0}" rows kept='' line p h lp rp state master current_master candidate attempt other used message reused=0
+  rows="$(molt_forward_rows "$PROJECT_STATE/forwards")" || return 1
+  while IFS=$'\t' read -r p h lp rp state master; do
+    [[ -n "$p" ]] || continue
+    if [[ "$p" == "$purpose" ]]; then
+      if [[ "$h" == "$MOLT_HOST" && "$rp" == "$vm_port" ]]; then preferred="$lp"; reused=1;
+      else molt_forward_cancel_locked "$purpose" || return 1; fi
+    else
+      printf -v line '%s\t%s\t%s\t%s\t%s\t%s' "$p" "$h" "$lp" "$rp" "$state" "$master"
+      kept="${kept}${line}"$'\n'
+    fi
+  done <<<"$rows"
+  for ((attempt=0; attempt<500; attempt++)); do
+    candidate=$((1024 + (10#$preferred - 1024 + attempt) % 64512)); used=0
+    for other in "$MOLT_HOME/projects"/*/forwards; do
+      [[ -f "$other" && "$other" != "$PROJECT_STATE/forwards" ]] || continue
+      while IFS=$'\t' read -r p h lp rp state master; do
+        [[ "$lp" != "$candidate" ]] || used=1
+      done <<<"$(molt_forward_rows "$other")"
+    done
+    while IFS=$'\t' read -r p h lp rp state master; do [[ "$lp" != "$candidate" ]] || used=1; done <<<"$kept"
+    if [[ "$used" == 1 ]]; then [[ "$fixed" == 0 ]] || break; continue; fi
+    if [[ "$reused" == 0 || "$attempt" != 0 ]] && molt_port_listening "$candidate"; then [[ "$fixed" == 0 ]] || break; continue; fi
+    current_master="$(molt_forward_master "$MOLT_HOST")" || { molt_error 'SSH master unavailable'; return 1; }
+    printf '%s%s\t%s\t%s\t%s\tpending\t%s\n' "$kept" "$purpose" "$MOLT_HOST" "$candidate" "$vm_port" "$current_master" | molt_forward_save || return 1
+    if message="$(ssh -O forward -L "127.0.0.1:$candidate:127.0.0.1:$vm_port" "$MOLT_HOST" 2>&1)"; then
+      printf '%s%s\t%s\t%s\t%s\tactive\t%s\n' "$kept" "$purpose" "$MOLT_HOST" "$candidate" "$vm_port" "$current_master" | molt_forward_save || return 1
+      printf '%s\n' "$candidate"; return 0
+    fi
+    case "$message" in
+      *'Address already in use'*|*'cannot listen to port'*|*'cannot bind'*) printf '%s' "$kept" | molt_forward_save || return 1 ;;
+      *'Port forwarding failed'*)
+        if molt_port_listening "$candidate"; then printf '%s' "$kept" | molt_forward_save || return 1;
+        else molt_error 'SSH forwarding failed; pending intent retained'; return 1; fi ;;
+      *) molt_error 'SSH forwarding failed; pending intent retained'; return 1 ;;
+    esac
+    [[ "$fixed" == 0 ]] || break
+  done
+  molt_error 'could not allocate a loopback port after at most 500 attempts'; return 1
+}
+molt_port_listening() {
+  if command -v lsof >/dev/null 2>&1; then lsof -nP -i "TCP:$1" -sTCP:LISTEN >/dev/null 2>&1;
+  elif [[ -r /proc/net/tcp ]]; then
+    local port; printf -v port '%04X' "$((10#$1))"
+    awk -v port="$port" '$4=="0A" && $2~":"port"$" {found=1} END {exit !found}' /proc/net/tcp /proc/net/tcp6
+  else return 1; fi
+}
+molt_forward_allocate() {
+  [[ "$1" == opencode || "$1" == adb || "$1" =~ ^app:[a-z][a-z0-9-]{0,31}$ ]] && valid_port "$2" && ((10#$2 >= 1024)) && valid_port "$3" || return 2
+  with_molt_forward_lock molt_forward_allocate_locked "$@"
 }
 forward_opencode_port() {
   local port="$PROJECT_OPENCODE_PORT" status
   startup_progress 'Opening and checking SSH tunnel'
   # The SSH master reuses an identical forward and rejects another owner's listener.
-  ssh -O forward -L "127.0.0.1:${port}:127.0.0.1:${port}" "$MOLT_HOST" >/dev/null 2>&1 || die "could not forward OpenCode on localhost:$port; check for another listener"
-  write_value "$PROJECT_STATE/forwards" "$port"
+  molt_forward_allocate opencode "$port" "$port" 1 >/dev/null || die "could not forward OpenCode on localhost:$port; check for another listener"
   status="$(curl -q --noproxy '*' --max-time 3 --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$port/global/health" || true)"
   case "$status" in
     200|401) ;;

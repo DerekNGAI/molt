@@ -12,7 +12,7 @@ while [[ $# -gt 0 ]]; do
     --local-only) LOCAL_ONLY=1 ;;
     --undo-vm) UNDO_VM=1 ;;
     --help|-h)
-      printf 'molt-uninstall [--yes] [--local-only|--undo-vm]\n\nDefault: remove owned remote and local resources; keep records if cleanup fails.\n--local-only: remove this Mac installation, leaving remote resources.\n--undo-vm: also undo recorded Docker installation/user access when the daemon has no containers or volumes.\n'; exit 0 ;;
+      printf 'molt-uninstall [--yes] [--local-only|--undo-vm]\n\nDefault: remove owned remote and local resources; keep records if cleanup fails.\n--local-only: remove this Mac installation, leaving remote resources.\n--undo-vm: also undo recorded, unused Binder preparation and Docker installation/user access. Changed or in-use modules remain with retry records.\n'; exit 0 ;;
     *) molt_error "unknown option: $1"; exit 2 ;;
   esac
   shift
@@ -22,7 +22,7 @@ molt_safe_home || exit 1
 [[ -e "$MOLT_HOME" ]] || { printf 'molt: already removed\n'; exit 0; }
 molt_owned_home || exit 1
 warn_local_uninstall() {
-  molt_error 'WARNING: VM resources may remain running. Workspaces, images, caches, provider credentials, SSH authorization, and VM preparation may remain. Remote edits will not be synchronized, and local cleanup records will be deleted.'
+  molt_error 'WARNING: VM resources may remain running. Workspaces, development services, Android devices/data, images, private Nix caches, provider credentials, SSH authorization, and VM preparation may remain. Remote edits will not be synchronized, and local cleanup records will be deleted.'
   "$MOLT_HOME/bin/molt" cleanup-inventory
 }
 SETUP_STATE="$("$MOLT_HOME/bin/molt" setup-state)" || exit 1

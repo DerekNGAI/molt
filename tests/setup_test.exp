@@ -1,6 +1,7 @@
 #!/usr/bin/expect -f
 # Fresh native installation, shell activation, VM setup, and complete uninstall.
 set timeout 25
+match_max -d 65536
 log_user 0
 proc see {text} {
   global spawn_id expect_out

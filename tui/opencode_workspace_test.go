@@ -53,7 +53,7 @@ func TestOpenCodeWorkspaceUpdateDefersAndPreservesData(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"molt", "_molt.sh", "_manage.sh", "_docker.sh", "_opencode.sh", "_remote.sh", "_monitor.sh"} {
+	for _, name := range []string{"molt", "_molt.sh", "_manage.sh", "_docker.sh", "_opencode.sh", "_remote.sh", "_monitor.sh", "_development.sh", "_android.sh"} {
 		data, err := os.ReadFile(filepath.Join(root, "bin", name))
 		if err != nil {
 			t.Fatal(err)
@@ -77,6 +77,8 @@ case "$1 ${2:-}" in
 esac
 `)
 	write(filepath.Join(tools, "curl"), "#!/bin/sh\nprintf '401'\n")
+	// SSH is doubled; its fixture HTTP server already owns the simulated tunnel port.
+	write(filepath.Join(tools, "lsof"), "#!/bin/sh\nexit 1\n")
 	write(filepath.Join(tools, "docker"), `#!/bin/bash
 set -eu
 state="$MOLT_TEST_VM"

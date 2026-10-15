@@ -6,6 +6,7 @@ trap 'rm -rf "$TMP"' EXIT
 source "$ROOT/bin/_molt.sh"
 source "$ROOT/bin/_opencode.sh"
 source "$ROOT/bin/_docker.sh"
+source "$ROOT/bin/_manage.sh"
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 log() { :; }
 die() { fail "$*"; }
@@ -14,13 +15,13 @@ write_value() { printf '%s\n' "$2" >"$1"; }
 read_value() { [[ ! -f "$1" ]] || IFS= read -r REPLY <"$1"; printf '%s\n' "${REPLY:-}"; }
 export MOLT_HOME="$TMP/home" PROJECT_STATE="$TMP/project" PROJECT_ID=aaaaaaaaaaaa PROJECT_NAME=app
 export PROJECT_OPENCODE_PORT=4100 MOLT_HOST=test-vm
-mkdir -p "$PROJECT_STATE" "$MOLT_HOME/state/tmp"
+mkdir -p "$PROJECT_STATE" "$MOLT_HOME/state/tmp" "$MOLT_HOME/state/ssh"
 ssh() { printf '%s\n' "$*" >>"$TMP/ssh.log"; }
 curl() { printf '401'; }
 forward_opencode_port
 forward_opencode_port
 if grep -q -- '-O cancel' "$TMP/ssh.log"; then fail 'second attachment cancelled the shared tunnel'; fi
-[[ "$(<"$PROJECT_STATE/forwards")" == 4100 ]] || fail 'forward ownership was not recorded'
+[[ "$(<"$PROJECT_STATE/forwards")" == $'opencode\ttest-vm\t4100\t4100\tactive\tunknown' ]] || fail 'forward ownership was not recorded'
 printf 'PASS: attachments reuse their SSH forward\n'
 
 load_project_state() {

@@ -15,7 +15,7 @@ printf 'identity\t%s\n' "$(hostname)"
 if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
   printf 'docker\tunavailable\n'; exit 0
 fi
-if ! containers="$(docker ps -a --filter "label=io.molt.installation=$installation" --format '{{json .}}' 2>/dev/null)"; then
+if ! containers="$(docker ps -a --filter "label=io.molt.installation=$installation" --format '{"Names":{{json .Names}},"State":{{json .State}},"Status":{{json .Status}},"Image":{{json .Image}},"Role":{{json (.Label "io.molt.role")}},"ProjectID":{{json (.Label "io.molt.project")}}}' 2>/dev/null)"; then
   printf 'docker\tunavailable\n'; exit 0
 fi
 printf 'docker\tready\n'
@@ -26,7 +26,14 @@ if [[ -n "$running" ]]; then
   while IFS= read -r line; do printf 'stats\t%s\n' "$line"; done < <(docker stats --no-stream --format '{{json .}}' $running 2>/dev/null)
   while IFS= read -r name; do
     (
-      if docker exec "$name" sh -c 'curl -q --noproxy "*" -fsS --max-time 1 --user "opencode:$(cat /molt-meta/opencode.password)" http://127.0.0.1:4096/global/health >/dev/null' 2>/dev/null; then
+      role="$(docker inspect -f '{{index .Config.Labels "io.molt.role"}}' "$name" 2>/dev/null)"
+      case "$role" in
+        android) probe='test "$(getprop sys.boot_completed)" = 1 && test "$(getprop init.svc.adbd)" = running' ;;
+        builder) printf 'health\t%s\tready\n' "$name"; exit 0 ;;
+        workspace|'') probe='curl -q --noproxy "*" -fsS --max-time 1 --user "opencode:$(cat /molt-meta/opencode.password)" http://127.0.0.1:4096/global/health >/dev/null' ;;
+        *) printf 'health\t%s\tunhealthy\n' "$name"; exit 0 ;;
+      esac
+      if docker exec "$name" sh -c "$probe" 2>/dev/null; then
         printf 'health\t%s\tready\n' "$name"
       else printf 'health\t%s\tunhealthy\n' "$name"; fi
     ) &

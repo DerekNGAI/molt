@@ -1,5 +1,6 @@
 #!/usr/bin/env expect
 set timeout 25
+match_max -d 65536
 log_user 0
 proc see {text} {
   expect {

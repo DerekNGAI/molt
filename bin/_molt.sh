@@ -192,7 +192,9 @@ molt_stop_workers() {
 molt_host_key() { printf '%s' "$1" | shasum -a 256 | cut -c1-20; }
 
 molt_ssh() (
-  molt_state || exit 1
+  if [[ "${MOLT_SSH_READ_ONLY:-0}" == 1 ]]; then
+    [[ -d "$MOLT_HOME/state/ssh" && "$(molt_canonical "$MOLT_HOME/state/ssh")" == "$MOLT_HOME/state/ssh" ]] || exit 255
+  else molt_state || exit 1; fi
   local known_hosts
   [[ ! -L "$MOLT_HOME/state/ssh/known_hosts" ]] || { molt_error 'symlinked known-hosts file'; exit 1; }
   known_hosts="${MOLT_HOME//%/%%}/state/ssh/known_hosts"
@@ -204,6 +206,7 @@ molt_ssh() (
   # Background TUI actions cannot borrow the outer terminal for authentication.
   # Interactive authentication runs in the control center's embedded PTY.
   if [[ "${MOLT_UI_BATCH:-0}" == 1 ]]; then options+=(-o BatchMode=yes -o StrictHostKeyChecking=yes); fi
+  if [[ "${MOLT_SSH_READ_ONLY:-0}" == 1 ]]; then options+=(-o ControlMaster=no -o ControlPersist=no -o BatchMode=yes -o StrictHostKeyChecking=yes); fi
   if [[ -n "${MOLT_SSH_CONFIG:-}" ]]; then options+=(-F "$MOLT_SSH_CONFIG");
   elif [[ -f "${MOLT_USER_HOME:-$HOME}/.ssh/config" ]]; then options+=(-F "${MOLT_USER_HOME:-$HOME}/.ssh/config");
   else options+=(-F /dev/null); fi

@@ -41,6 +41,7 @@ type metrics struct {
 type container struct {
 	Names, State, Status, Image string
 	CPU, Memory, NetIO, Health  string
+	Role, ProjectID             string
 }
 
 type remote struct {
@@ -62,7 +63,7 @@ func (p project) runtime(h remote) string {
 		return "unknown"
 	}
 	for _, c := range h.Containers {
-		if c.Names == p.Container {
+		if c.Names == p.Container && (c.Role == "" || c.Role == "workspace") {
 			return c.State
 		}
 	}
@@ -71,7 +72,7 @@ func (p project) runtime(h remote) string {
 
 func (p project) health(h remote) string {
 	for _, c := range h.Containers {
-		if c.Names == p.Container && h.Error == "" {
+		if c.Names == p.Container && (c.Role == "" || c.Role == "workspace") && h.Error == "" {
 			return c.Health
 		}
 	}
@@ -81,7 +82,7 @@ func (p project) health(h remote) string {
 func (p project) usage(h remote) (string, string) {
 	if h.Error == "" && h.Docker == "ready" {
 		for _, c := range h.Containers {
-			if c.Names == p.Container && c.State == "running" {
+			if c.Names == p.Container && (c.Role == "" || c.Role == "workspace") && c.State == "running" {
 				return containerUsage(c)
 			}
 		}
@@ -214,6 +215,7 @@ func parseRemote(name string, data []byte) (remote, error) {
 				return h, fmt.Errorf("invalid Docker status: %w", err)
 			}
 			c.Names, c.State, c.Status, c.Image = clean(c.Names), clean(c.State), clean(c.Status), clean(c.Image)
+			c.Role, c.ProjectID = clean(c.Role), clean(c.ProjectID)
 			h.Containers = append(h.Containers, c)
 		case "stats":
 			var s struct{ Name, CPUPerc, MemUsage, NetIO string }
@@ -235,7 +237,7 @@ func parseRemote(name string, data []byte) (remote, error) {
 		c := &h.Containers[i]
 		s := stats[c.Names]
 		c.CPU, c.Memory, c.NetIO, c.Health = clean(s.CPUPerc), clean(s.MemUsage), clean(s.NetIO), health[c.Names]
-		if c.Health == "" {
+		if c.Health == "" || c.Role != "" && c.Role != "workspace" {
 			c.Health = "—"
 		}
 	}
@@ -266,6 +268,19 @@ func (b backend) output(timeout time.Duration, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(b.Context, timeout)
 	defer cancel()
 	c := b.command(ctx, args...)
+	if len(args) > 0 && args[0] == "dev" {
+		data := &developmentBuffer{Limit: developmentJSONLimit}
+		errors := &developmentBuffer{Limit: 256 * 1024}
+		c.Stdout, c.Stderr = data, errors
+		err := c.Run()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("%w: %s", ctx.Err(), clean(errors.String()))
+			}
+			return nil, fmt.Errorf("%s: %s", err, clean(errors.String()))
+		}
+		return data.Bytes(), nil
+	}
 	var errors strings.Builder
 	c.Stderr = &errors
 	data, err := c.Output()

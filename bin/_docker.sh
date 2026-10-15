@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-cer
 RUN git config --system --add safe.directory /workspace
 ARG TARGETARCH
 ARG OPENCODE_VERSION=1.18.34
+LABEL io.molt.role=workspace io.molt.opencode=$OPENCODE_VERSION
 COPY tools.lock /tmp/tools.lock
 RUN arch="${TARGETARCH:-$(uname -m)}"; case "$arch" in arm64|aarch64) asset=opencode-linux-arm64.tar.gz ;; amd64|x86_64) asset=opencode-linux-x64-baseline.tar.gz ;; *) printf "molt: unsupported container architecture: %s\n" "$arch" >&2; exit 1 ;; esac; version="${OPENCODE_VERSION:-1.18.34}"; curl -fL "https://github.com/anomalyco/opencode/releases/download/v$version/$asset" -o /tmp/opencode.tar.gz && awk -v asset="$asset" '$2==asset {print $1 "  /tmp/opencode.tar.gz"}' /tmp/tools.lock | sha256sum -c - && mkdir -p /opt/opencode && tar -xzf /tmp/opencode.tar.gz -C /opt/opencode && test "$(/opt/opencode/opencode --version)" = "$version" && rm /tmp/opencode.tar.gz
 RUN node_arch="${TARGETARCH:-$(uname -m)}"; case "$node_arch" in arm64|aarch64) node_arch=arm64 ;; amd64|x86_64) node_arch=x64 ;; *) printf "molt: unsupported Node.js architecture: %s\n" "$node_arch" >&2; exit 1 ;; esac; asset="node-v24.21.0-linux-$node_arch.tar.gz"; curl -fL "https://nodejs.org/dist/v24.21.0/$asset" -o /tmp/node.tar.gz && awk -v asset="$asset" '$2==asset {print $1 "  /tmp/node.tar.gz"}' /tmp/tools.lock | sha256sum -c - && mkdir -p /opt/node && tar -xzf /tmp/node.tar.gz --strip-components=1 -C /opt/node && rm /tmp/node.tar.gz /tmp/tools.lock
@@ -40,6 +41,13 @@ DOCKERFILE
 
 ensure_container() {
   local running version owner image_id expected_id config_version auth_version expected_auth_version identity
+  local runtime_image="$PROJECT_IMAGE"
+  local -a development_args=()
+  if declare -F development_container_configuration >/dev/null; then
+    development_container_configuration || return 1
+    runtime_image="$DEVELOPMENT_RUNTIME_IMAGE"
+    development_args=(${DEVELOPMENT_DOCKER_ARGS[@]+"${DEVELOPMENT_DOCKER_ARGS[@]}"})
+  fi
   startup_progress 'Checking container runtime'
   identity="$(remote_run 'printf "%s:%s\n" "$(id -u)" "$(id -g)"')" || return 1
   [[ "$identity" =~ ^[0-9]+:[0-9]+$ ]] || die 'could not read VM user identity'
@@ -51,7 +59,7 @@ ensure_container() {
     [[ "$owner" == "$MOLT_INSTALL_ID" ]] || die 'container ownership mismatch'
     version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.runtime\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
     image_id="$(remote_run "docker inspect -f '{{.Image}}' $(quote_remote "$PROJECT_CONTAINER")")"
-    expected_id="$(remote_run "docker image inspect -f '{{.Id}}' $(quote_remote "$PROJECT_IMAGE")")"
+    expected_id="$(remote_run "docker image inspect -f '{{.Id}}' $(quote_remote "$runtime_image")")"
     config_version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.config\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
     auth_version="$(remote_run "docker inspect -f '{{index .Config.Labels \"io.molt.auth\"}}' $(quote_remote "$PROJECT_CONTAINER")")"
     if [[ "$version" == "$MOLT_RUNTIME_VERSION" && "$image_id" == "$expected_id" && "$config_version" == "$OPENCODE_CONFIG_VERSION" && "$auth_version" == "$expected_auth_version" ]]; then
@@ -60,6 +68,7 @@ ensure_container() {
       return 0
     fi
     # Recreate only the container; retain workspace, credentials, and session history.
+    if [[ "$running" == true && -f "$PROJECT_STATE/development.json" ]] && declare -F development_safe_restart >/dev/null; then development_safe_restart || return 1; fi
     startup_progress 'Updating container runtime'
     if molt_opencode_managed && [[ "${PROJECT_OPENCODE_TARGET:-}" != "$PROJECT_OPENCODE_VERSION" ]]; then
       startup_progress 'Backing up OpenCode session data'
@@ -79,7 +88,7 @@ ensure_container() {
   fi
   startup_progress 'Starting container'
   remote_run "docker run -d --init --restart unless-stopped --user $identity --name $(quote_remote "$PROJECT_CONTAINER") \
-    --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.opencode=${PROJECT_OPENCODE_TARGET:-1.18.34} --label io.molt.config=$OPENCODE_CONFIG_VERSION --label io.molt.auth=$expected_auth_version \
+    --label io.molt.installation=$MOLT_INSTALL_ID --label io.molt.project=$PROJECT_ID --label io.molt.role=workspace --label io.molt.runtime=$MOLT_RUNTIME_VERSION --label io.molt.opencode=${PROJECT_OPENCODE_TARGET:-1.18.34} --label io.molt.config=$OPENCODE_CONFIG_VERSION --label io.molt.auth=$expected_auth_version \
     --publish 127.0.0.1:$PROJECT_OPENCODE_PORT:4096 --workdir /workspace \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_PATH,dst=/workspace") \
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_META,dst=/molt-meta,readonly") \
@@ -88,7 +97,7 @@ ensure_container() {
     --mount $(quote_remote "type=bind,src=$PROJECT_REMOTE_HOME/auth/auth.json,dst=/molt-cache/data/opencode/auth.json") \
     --env HOME=/molt-cache/home --env XDG_CONFIG_HOME=/molt-config --env XDG_DATA_HOME=/molt-cache/data \
     --env XDG_CACHE_HOME=/molt-cache/cache --env XDG_STATE_HOME=/molt-cache/state --env TMPDIR=/molt-cache/tmp \
-    --env OPENCODE_CONFIG_DIR=/molt-config/opencode --env OPENCODE_DISABLE_AUTOUPDATE=1 $(quote_remote "$PROJECT_IMAGE") >/dev/null"
+    --env OPENCODE_CONFIG_DIR=/molt-config/opencode --env OPENCODE_DISABLE_AUTOUPDATE=1 ${development_args:+$(quote_remote "${development_args[@]}")} $(quote_remote "$runtime_image") >/dev/null"
 }
 
 with_project_setup_lock() (
@@ -96,7 +105,7 @@ with_project_setup_lock() (
   managed_file "$lock"
   work="$(mktemp -d "$MOLT_HOME/state/tmp/start.XXXXXX")" || return 1
   startup_cleanup() {
-    local rc=$? stage
+    local rc="$1" work="$2" heartbeat="$3" lock="$4" acquired="$5" stage
     trap - EXIT
     if [[ -n "$heartbeat" ]]; then molt_kill_tree "$heartbeat"; wait "$heartbeat" 2>/dev/null || true; fi
     if [[ "$rc" != 0 ]]; then
@@ -110,7 +119,7 @@ with_project_setup_lock() (
     rm -rf -- "$work"
     exit "$rc"
   }
-  trap startup_cleanup EXIT
+  trap "$(printf 'startup_cleanup "$?" %q %q %q %q' "$work" "$heartbeat" "$lock" "$acquired")" EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
@@ -120,8 +129,13 @@ with_project_setup_lock() (
   PROJECT_SETUP_WORK="$work"
   startup_progress "Waiting for workspace access · ${PROJECT_NAME:-$PROJECT_ID}"
   startup_heartbeat "$work" "$started" & heartbeat=$!
+  trap "$(printf 'startup_cleanup "$?" %q %q %q %q' "$work" "$heartbeat" "$lock" "$acquired")" EXIT
   for attempt in {1..300}; do
-    if mkdir "$lock" 2>/dev/null; then acquired=1; break; fi
+    if mkdir "$lock" 2>/dev/null; then
+      acquired=1
+      trap "$(printf 'startup_cleanup "$?" %q %q %q %q' "$work" "$heartbeat" "$lock" "$acquired")" EXIT
+      break
+    fi
     previous="$(read_value "$lock/pid" 2>/dev/null || true)"
     if [[ "$previous" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$previous" 2>/dev/null; then rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true; fi
     sleep 0.1
@@ -156,6 +170,7 @@ ensure_project_container_locked() {
     ensure_container
     wait_opencode_ready
     forward_opencode_port
+    if declare -F development_workspace_ready >/dev/null; then development_workspace_ready || return $?; fi
     startup_progress "$PROJECT_NAME is ready on $MOLT_HOST"
   fi
 }

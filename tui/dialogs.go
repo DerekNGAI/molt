@@ -18,11 +18,13 @@ type menuItem struct {
 	Run   func() tea.Cmd
 }
 type menuState struct {
-	Title, Help string
-	Items       []menuItem
-	Details     []string
-	Index       int
-	Back        func() tea.Cmd
+	Title, Help                    string
+	Items                          []menuItem
+	Details                        []string
+	Keys                           []string
+	Index                          int
+	Back                           func() tea.Cmd
+	DevelopmentID, DevelopmentPage string
 }
 type formField struct {
 	Label, Value string
@@ -74,7 +76,7 @@ func (m *model) screen(name string) func() tea.Cmd {
 }
 func (m *model) showMenu(title, help string, back func() tea.Cmd, items ...menuItem) tea.Cmd {
 	m.overlay = "native-menu"
-	m.menu = menuState{Title: title, Help: help, Items: items, Back: back}
+	m.menu = menuState{Title: clean(title), Help: safeText(help), Items: items, Back: back}
 	return nil
 }
 func (m *model) showForm(title, help string, back func() tea.Cmd, submit func([]string) tea.Cmd, fields ...formField) tea.Cmd {
@@ -88,12 +90,12 @@ func (m *model) showForm(title, help string, back func() tea.Cmd, submit func([]
 func (m *model) showMessage(title, body string, back func() tea.Cmd) tea.Cmd {
 	m.selection, m.rendered = nil, ""
 	m.overlay, m.overlayScroll = "message", 0
-	m.dialog = dialogState{Title: title, Body: safeText(body), Back: back}
+	m.dialog = dialogState{Title: clean(title), Body: safeText(body), Back: back}
 	return nil
 }
 func (m *model) confirm(title, body string, back, yes func() tea.Cmd) tea.Cmd {
 	m.overlay, m.overlayScroll = "confirm", 0
-	m.dialog = dialogState{Title: title, Body: body, Back: back, Yes: yes}
+	m.dialog = dialogState{Title: clean(title), Body: safeText(body), Back: back, Yes: yes}
 	return nil
 }
 func back(cmd func() tea.Cmd) tea.Cmd {
@@ -109,12 +111,17 @@ func (m *model) fetch(title string, returnTo func() tea.Cmd, done func([]byte) t
 	}
 	m.queryID++
 	id := m.queryID
-	ctx, cancel := context.WithTimeout(m.b.Context, 30*time.Second)
+	timeout := 30 * time.Second
+	if len(args) > 0 && args[0] == "dev" {
+		timeout = 8 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(m.b.Context, timeout)
 	m.queryCancel, m.onQuery = cancel, done
 	m.onQueryError = nil
 	m.overlay = "loading"
 	m.queryStarted = time.Now()
-	body := "Retrieving " + title + "…\nThis check times out after 30s."
+	m.queryTimeout = timeout
+	body := fmt.Sprintf("Retrieving %s…\nThis check times out after %s.", title, timeout)
 	if len(args) >= 3 && args[0] == "connection" && args[1] == "test" {
 		body = "Checking SSH connection to " + clean(args[2]) + "…\nWaiting for the VM response. Timeout: 30s."
 	}
@@ -123,7 +130,7 @@ func (m *model) fetch(title string, returnTo func() tea.Cmd, done func([]byte) t
 	b.Context = ctx
 	return tea.Batch(m.animate(), queryTick(id), func() tea.Msg {
 		defer cancel()
-		data, err := b.output(30*time.Second, args...)
+		data, err := b.output(timeout, args...)
 		return queryMsg{id, data, err}
 	})
 }
@@ -134,7 +141,7 @@ func (m *model) finishQuery(msg queryMsg) tea.Cmd {
 	m.queryCancel = nil
 	if msg.Error != nil {
 		if errors.Is(msg.Error, context.DeadlineExceeded) {
-			msg.Error = fmt.Errorf("Timed out after 30s. Retry this check; for VM operations, check the connection or authenticate through SSH.\n\n%w", msg.Error)
+			msg.Error = fmt.Errorf("Timed out after %s. Retry this check; for VM operations, check the connection or authenticate through SSH.\n\n%w", m.queryTimeout, msg.Error)
 		}
 		if m.onQueryError != nil {
 			return m.onQueryError(msg.Error)

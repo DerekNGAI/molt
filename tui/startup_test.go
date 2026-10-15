@@ -235,6 +235,7 @@ esac
 		t.Fatal(err)
 	}
 	wait("Esc cancel")
+	wait("Building")
 	if !strings.Contains(term.String(), "Building") || !strings.Contains(term.String(), "Esc") {
 		t.Fatalf("compact startup lost its stage or controls:\n%s", term.String())
 	}

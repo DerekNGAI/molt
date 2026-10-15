@@ -49,6 +49,8 @@ type model struct {
 	selected, query, overlay, logProject, action, work                           string
 	searching, logs, paused, invBusy, localBusy, syncBusy, logBusy, frameRunning bool
 	remoteBusy                                                                   map[string]bool
+	developments                                                                 map[string]developmentObservation
+	developmentBusy                                                              map[string]bool
 	animation                                                                    bool
 	idleRunning                                                                  bool
 	gauges                                                                       map[string]gaugeTransition
@@ -76,6 +78,7 @@ type model struct {
 	afterAction, actionBack, retry                                               func() tea.Cmd
 	actionFailure                                                                func(error) tea.Cmd
 	queryStarted, actionStarted, stageStarted                                    time.Time
+	queryTimeout                                                                 time.Duration
 	actionStage                                                                  string
 	session                                                                      *terminalSession
 	sessionCancel                                                                context.CancelFunc
@@ -94,7 +97,7 @@ func newModel(b backend) *model {
 		b.Context = context.Background()
 	}
 	ctx, cancel := context.WithCancel(b.Context)
-	return &model{b: b, inv: inventory{Config: map[string]string{}}, width: 100, height: 32, remotes: map[string]remote{}, previousRemote: map[string]metrics{}, history: map[string][]float64{}, syncs: map[string]syncState{}, remoteBusy: map[string]bool{}, gauges: map[string]gaugeTransition{}, changed: map[string]time.Time{}, collectorContext: ctx, collectorCancel: cancel, collectors: &sync.WaitGroup{}, events: []event{{time.Now(), "Control center ready · metrics refresh every 3 seconds"}}}
+	return &model{b: b, inv: inventory{Config: map[string]string{}}, width: 100, height: 32, remotes: map[string]remote{}, previousRemote: map[string]metrics{}, history: map[string][]float64{}, syncs: map[string]syncState{}, remoteBusy: map[string]bool{}, developments: map[string]developmentObservation{}, developmentBusy: map[string]bool{}, gauges: map[string]gaugeTransition{}, changed: map[string]time.Time{}, collectorContext: ctx, collectorCancel: cancel, collectors: &sync.WaitGroup{}, events: []event{{time.Now(), "Control center ready · metrics refresh every 3 seconds"}}}
 }
 
 func (m *model) collector(cmd tea.Cmd) tea.Cmd {
@@ -206,6 +209,9 @@ func (m *model) poll() tea.Cmd {
 	}
 	if m.logs && m.logProject != "" && m.action == "" && !m.logBusy {
 		cmds = append(cmds, m.fetchLogs(m.logProject))
+	}
+	if p := m.developmentTarget(); p.ID != "" {
+		cmds = append(cmds, m.observeDevelopment(p))
 	}
 	cmds = append(cmds, m.animate())
 	return tea.Batch(cmds...)
@@ -364,6 +370,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case queryMsg:
 		return m, m.finishQuery(msg)
+	case developmentMsg:
+		m.receiveDevelopment(msg)
 	case queryTickMsg:
 		if int(msg) == m.queryID && m.overlay == "loading" {
 			return m, queryTick(m.queryID)
@@ -769,6 +777,7 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		} else if m.focus == 2 {
 			m.overlay = "detail"
 			m.overlayScroll = 0
+			return m.observeDevelopment(m.current())
 		}
 	case "s":
 		if p := m.current(); p.ID != "" {
@@ -794,6 +803,10 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "d":
 		return m.startAction("Diagnostics", "doctor")
+	case "D":
+		if p := m.current(); p.ID != "" {
+			return m.developmentMenu(p, m.dashboard)
+		}
 	case "c":
 		if len(m.inv.Hosts) > 0 {
 			return m.terminal("connection", "login", m.inv.Hosts[m.hostIndex])
@@ -871,6 +884,13 @@ func (m *model) overlayKey(msg tea.KeyMsg) tea.Cmd {
 			m.overlay = ""
 		}
 	case "help", "detail":
+		if m.overlay == "detail" && k == "D" {
+			p, scroll := m.current(), m.overlayScroll
+			return m.developmentMenu(p, func() tea.Cmd {
+				m.selected, m.overlay, m.overlayScroll = p.ID, "detail", scroll
+				return m.observeDevelopment(p)
+			})
+		}
 		switch k {
 		case "j", "down":
 			m.overlayScroll++

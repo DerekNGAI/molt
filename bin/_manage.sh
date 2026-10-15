@@ -329,11 +329,17 @@ cmd_bootstrap() {
 }
 
 cmd_unprepare_vm() {
-  local state root failed=0
+  local state root failed=0 android_preparation stage
   for state in "$MOLT_HOME/state/remotes"/*/host; do
     [[ -f "$state" ]] || continue
     MOLT_HOST="$(read_value "$state")"
     root="$(read_value "${state%/*}/root")"
+    android_preparation="$(remote_run "if test -d $(quote_remote "$root/state/android-preparation"); then printf yes; else printf no; fi")" || { failed=1; continue; }
+    if [[ "$android_preparation" == yes ]]; then
+      stage="$(remote_script android-unprepare-stage "$root" "$MOLT_INSTALL_ID")" || { failed=1; continue; }
+      upload_file "$SCRIPT_DIR/../remote/android.sh" "$stage" || { failed=1; continue; }
+      ssh -t "$MOLT_HOST" "bash $(quote_remote "$stage" unprepare-host "$root" "$MOLT_INSTALL_ID" 000000000000)" || { failed=1; continue; }
+    fi
     remote_script stage-bootstrap "$root" "$MOLT_INSTALL_ID" >/dev/null || { failed=1; continue; }
     upload_file "$SCRIPT_DIR/_remote.sh" "$root/state/bootstrap.sh" || { failed=1; continue; }
     ssh -t "$MOLT_HOST" "bash $(quote_remote "$root/state/bootstrap.sh" unbootstrap "$root" "$MOLT_INSTALL_ID")" || failed=1

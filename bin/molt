@@ -82,7 +82,7 @@ load_project_state() {
     started|complete) ;;
     ''|untouched)
       PROJECT_SETUP_STATE=untouched
-      if [[ -n "$PROJECT_REMOTE_PATH$PROJECT_REMOTE_META$PROJECT_REMOTE_HOME$PROJECT_REMOTE_OPENCODE_CONFIG" || "$PROJECT_ACTIVE" != 0 || "$PROJECT_SYNC_CREATED" != 0 || -e "$state/setup_state" && ! -r "$state/setup_state" ]]; then
+      if [[ -n "$PROJECT_REMOTE_PATH$PROJECT_REMOTE_META$PROJECT_REMOTE_HOME$PROJECT_REMOTE_OPENCODE_CONFIG" || "$PROJECT_ACTIVE" != 0 || "$PROJECT_SYNC_CREATED" != 0 || -e "$state/development.json" || -L "$state/development.json" || -e "$state/setup_state" && ! -r "$state/setup_state" ]]; then
         PROJECT_SETUP_STATE=started
       fi ;;
     *) PROJECT_SETUP_STATE=started ;;
@@ -419,6 +419,7 @@ start_loaded_project() {
   ensure_container
   wait_opencode_ready
   forward_opencode_port
+  development_workspace_ready || return $?
   PROJECT_ACTIVE=1 PROJECT_RUNTIME_VERSION="$MOLT_RUNTIME_VERSION"
   PROJECT_SETUP_STATE=complete
   save_project
@@ -438,6 +439,7 @@ stop_project_writer() {
 }
 stop_loaded_project() {
   local sessions
+  development_stop_project || return $?
   [[ "$PROJECT_ACTIVE" == 1 || -n "$PROJECT_REMOTE_PATH" ]] || return 0
   if [[ "$PROJECT_LAYOUT" == 2 && -n "$PROJECT_REMOTE_HOME" && "$PROJECT_RUNTIME_VERSION" != "$MOLT_RUNTIME_VERSION" ]]; then
     repair_loaded_permissions || return 1
@@ -586,8 +588,10 @@ reset_loaded_project() {
       [[ -f "$record/setup_state" ]] || write_value "$record/setup_state" started
     fi
     terminate_project_sync 1 || { log "could not terminate $PROJECT_SYNC; retry records retained"; return 1; }
-    cancel_project_forwards
+    android_stop_viewer || return 1
+    cancel_project_forwards || return 1
   else
+    development_cleanup_project || { log 'could not clean development resources; retry records retained'; return 1; }
     # Stop the writer before the final sync so cleanup cannot race server edits.
     if [[ "$PROJECT_LAYOUT" == 2 ]]; then
       stop_loaded_project || { log 'could not stop and synchronize the server; retry records retained'; return 1; }
@@ -631,6 +635,8 @@ cmd_remove_remote_roots() {
     [[ -f "$state" ]] || continue
     MOLT_HOST="$(read_value "$state")"
     root="$(read_value "${state%/*}/root")"
+    PROJECT_REMOTE_HOME="$root" PROJECT_ID=000000000000
+    development_cleanup_shared || { failed=1; continue; }
     if remote_script "$action" "$root" "$MOLT_INSTALL_ID"; then
       [[ "$action" == remove-root ]] || continue
       ssh_down || failed=1
@@ -665,6 +671,7 @@ cmd_reset() {
 }
 warn_local_project_removal() {
   log 'WARNING: VM resources may remain running, and remote edits will not be synchronized. Local-only removal discards project cleanup records; manual VM cleanup may be required.'
+  development_inventory || return 1
 }
 cmd_tui() {
   local screen=''
@@ -709,6 +716,11 @@ molt — remote OpenCode workspaces
   molt shell [enable|disable]  manage automatic Zsh activation
   molt status / doctor        show status / check prerequisites
   molt logs [repo]             show OpenCode server logs
+  molt dev <repo|@id> <action> prepare and manage repository development
+    status --json / ports --json / cache --json  observe without starting
+    prepare / menu / shell / run <id> / start / stop / logs [service-id]
+    open <port-id> / clean-cache --yes --revision <sha256>
+    android check|enable|disable|prepare-host|start|stop|view|logs|reset --yes
   molt sync [repo]             show synchronization status and conflicts
   molt sync-repair <repo>      stop its server and repair root-owned VM files
   molt monitor [host <alias>|sync]  read machine status for the dashboard
@@ -720,12 +732,16 @@ molt — remote OpenCode workspaces
 
   opencode [args]              auto-start and attach in registered repositories
   MOLT_LOCAL=1 opencode        run locally with your normal OpenCode state
+  menu                        open the nearest registered development menu
+  MOLT_LOCAL=1 menu            use an existing local menu command
 USAGE
 }
 source "$SCRIPT_DIR/_manage.sh"
 source "$SCRIPT_DIR/_docker.sh"
 source "$SCRIPT_DIR/_opencode.sh"
 source "$SCRIPT_DIR/_monitor.sh"
+source "$SCRIPT_DIR/_development.sh"
+source "$SCRIPT_DIR/_android.sh"
 main() {
   local command="${1:-tui}" state profile ref
   shift || true
@@ -734,6 +750,7 @@ main() {
     project-id) project_id_for_path "${1:-.}" ;; project-find) cmd_project_find "$@" ;; project-active) project_active_for_path "${1:-.}" ;;
     setup) cmd_setup ;; setup-state) cmd_setup_state "$@" ;; bootstrap) cmd_bootstrap ;; unprepare-vm) cmd_unprepare_vm ;;
     register) cmd_register "$@" ;; start) cmd_start "$@" ;; stop) cmd_stop_project "$@" ;;
+    dev) cmd_dev "$@" ;;
     restart) cmd_stop_project "$@" && cmd_start "$@" ;;
     up) for state in "$MOLT_PROJECTS_HOME"/*/path; do [[ ! -f "$state" ]] || cmd_start "@$(basename "${state%/path}")"; done ;;
     down) cmd_down ;; status) cmd_status ;; doctor) cmd_doctor ;;
@@ -753,6 +770,7 @@ main() {
         load_project_state "${state%/path}"
         printf 'Remote host: %s\n  project: %s\n  metadata: %s\n  container: %s\n  image: %s\n' "$PROJECT_HOST" "$PROJECT_REMOTE_PATH" "$PROJECT_REMOTE_META" "$PROJECT_CONTAINER" "$PROJECT_IMAGE"
         [[ "$PROJECT_LAYOUT" == 2 ]] || printf '  legacy volume: molt-cache-%s\n' "$PROJECT_ID"
+        development_inventory || return 1
       done
       for state in "$MOLT_HOME/state/remotes"/*/host; do
         [[ ! -f "$state" ]] || printf 'Remote host: %s\n  root: %s\n' "$(read_value "$state")" "$(read_value "${state%/*}/root")"
@@ -766,6 +784,7 @@ main() {
     local-down)
       molt_stop_workers || exit 1
       molt_stop_daemon || exit 1
+      development_local_down || exit 1
       for state in "$MOLT_HOME/state/ssh"/c-*; do
         [[ -S "$state" ]] || continue
         (cd "$MOLT_HOME/state/ssh" && command ssh -S "./$(basename "$state")" -O exit ignored-host) || exit 1

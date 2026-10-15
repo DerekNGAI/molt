@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "Fixture repository",
+  "actions": [
+    {"id":"extra","label":"Extra command","kind":"task","argv":["printf","literal ; $(touch nope)"],"cwd":"."},
+    {"id":"test","label":"Run tests","kind":"task","argv":["npm","test"],"cwd":"."},
+    {"id":"dev","label":"Development server","kind":"service","argv":["npm","run","dev"],"cwd":"."},
+    {"id":"setup","label":"Install dependencies","kind":"task","argv":["npm","ci"],"cwd":"."}
+  ],
+  "ports": [{"id":"web","label":"Web application","service":"dev","container_port":3000,"local_port":3000,"scheme":"http"}],
+  "android": {"enabled":false}
+}

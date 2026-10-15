@@ -1,0 +1,214 @@
+#!/usr/bin/expect -f
+set timeout 12
+match_max -d 65536
+log_user 0
+log_file -a -noappend $env(MOLT_DEVELOPMENT_TUI_LOG)
+set fixture $env(MOLT_DEVELOPMENT_FIXTURE)
+proc write_file {path data} { set f [open $path w]; puts -nonewline $f $data; close $f }
+proc read_file {path} { set f [open $path r]; set data [read $f]; close $f; return $data }
+proc fail {text} { puts stderr "FAIL: $text"; exit 1 }
+proc see {text} {
+  global spawn_id expect_out
+  expect {
+    -ex $text { return }
+    timeout { fail "development UI did not show '$text'\n$expect_out(buffer)" }
+    eof { fail "development UI exited before '$text'" }
+  }
+}
+proc enter {} { global spawn_id; send -- "\r"; after 120 }
+proc escape {} { global spawn_id; send -- "\033"; after 300 }
+proc down {count} { global spawn_id; for {set i 0} {$i < $count} {incr i} { send -- "\033\133B"; after 45 } }
+proc choose {index label} { global spawn_id; send -- "g"; after 80; down $index; see "› $label"; enter }
+proc launch {id} {
+  global spawn_id spawn_out env fixture
+  spawn -noecho $env(MOLT_DEVELOPMENT_TEST_BINARY) --cli "$fixture/bin/molt" --home $env(MOLT_HOME) --screen development:$id
+  stty rows 32 columns 100 < $spawn_out(slave,name)
+  see "DEVELOPMENT /"
+  see "Install dependencies"
+}
+proc exit_menu {} {
+  global spawn_id
+  escape
+  send -- "3"
+  see "WORKSPACES"
+  send -- "q"
+  expect eof
+  catch wait result
+  if {[lindex $result 3] != 0} { fail "terminal client exit: $result" }
+}
+proc ignore_connection {channel address port} { close $channel }
+# Allocate and hold distinct loopback ports; their mapping is fixture data only.
+set socket1 [socket -server ignore_connection -myaddr 127.0.0.1 0]
+set socket2 [socket -server ignore_connection -myaddr 127.0.0.1 0]
+set port1 [lindex [fconfigure $socket1 -sockname] end]
+set port2 [lindex [fconfigure $socket2 -sockname] end]
+proc ports_json {port} {
+  return [format {[{"id":"web","label":"Web application","service":"dev","container_port":3000,"vm_port":31000,"local_port":%d,"scheme":"http","url":"http://127.0.0.1:%d","state":"forwarded","reason":""}]} $port $port]
+}
+proc status_json {id port android viewer} {
+  set enabled [expr {$android == "disabled" ? "false" : "true"}]
+  return [format {"version":1,"project_id":"%s","name":"Fixture","environment":{"state":"ready","revision":"","reason":""},"services":[{"id":"dev","label":"Development server","state":"running","reason":""}],"ports":%s,"android":{"enabled":%s,"state":"%s","reason":"fixture capability report","container":"fixture-device","adb_vm_port":0,"adb_local_port":0,"adb_server_local_port":0,"viewer_state":"%s"},"cache":{"reclaimable_bytes":123,"reason":""},"cleanup":{"state":"pending","remaining":["fixture-builder","/owned/cache/output"],"reason":"partial fixture cleanup"}} $id [ports_json $port] $enabled $android $viewer]
+}
+proc cache_json {id revision bytes} {
+  return [format {"version":1,"project_id":"%s","revision":"%s","reclaimable_bytes":%d,"items":[{"id":"output","kind":"build-output","path":"/owned/cache/output","bytes":%d}],"reason":""} $id $revision $bytes $bytes]
+}
+foreach {id port} [list aaaaaaaaaaaa $port1 bbbbbbbbbbbb $port2] {
+  write_file "$fixture/status-$id.json" "\{[status_json $id $port disabled closed]\}"
+  write_file "$fixture/ports-$id.json" [ports_json $port]
+  write_file "$fixture/cache-$id.json" "\{[cache_json $id [string repeat b 64] 123]\}"
+}
+write_file "$fixture/cache-changed.json" "\{[cache_json aaaaaaaaaaaa [string repeat c 64] 456]\}"
+write_file "$fixture/android-ready.json" "\{[status_json aaaaaaaaaaaa $port1 ready closed]\}"
+write_file "$fixture/viewer-running.json" "\{[status_json aaaaaaaaaaaa $port1 ready running]\}"
+launch aaaaaaaaaaaa
+# Actual URL and project identity survive menu navigation and copying.
+choose 11 "Application URLs"
+see "APPLICATION URLS / APP-ONE"
+choose 0 "Web application"
+see "URL / WEB APPLICATION / APP-ONE"
+see "http://127.0.0.1:$port1"
+choose 0 "Inspect mapping"
+see "MAPPING / WEB APPLICATION"
+see "WebSockets"
+enter
+choose 2 "Copy actual URL"
+see "Copied to clipboard"
+if {[read_file "$fixture/clipboard"] != "http://127.0.0.1:$port1"} { fail "first repository copied the wrong actual URL" }
+choose 1 "Open in browser"
+see "COMPLETED"
+enter
+escape
+see "APPLICATION URLS"
+escape
+see "DEVELOPMENT"
+# Embedded task and shell sessions return to their selected item.
+choose 2 "Run tests"
+see "SESSION / Run tests"
+see "Fixture terminal ready"
+send -- "task-input\r"
+see "COMPLETED"
+enter
+see "› Run tests"
+choose 9 "Development shell"
+see "SESSION / Development shell"
+see "Fixture terminal ready"
+send -- "shell-input\r"
+see "COMPLETED"
+enter
+see "› Development shell"
+choose 1 "Development server"
+see "COMPLETED"
+enter
+see "› Development server"
+# Failure retry and Ctrl-C cancellation stay inside Molt.
+write_file "$fixture/fail-action" ""
+choose 7 "Start development"
+see "FAILED"
+file delete "$fixture/fail-action"
+send -- "r"
+see "COMPLETED"
+enter
+write_file "$fixture/hold-action" ""
+choose 6 "Prepare environment"
+see "Fixture action waiting"
+send -- "\003"
+see "Cancel this action"
+send -- "y"
+see "FAILED"
+file delete "$fixture/hold-action"
+enter
+# Per-repository Android controls, interactive administrator auth and viewer state.
+choose 12 "Android device"
+see "ANDROID / APP-ONE"
+choose 1 "Enable Android"
+see "ENABLE ANDROID / APP-ONE"
+send -- "n"
+see "ANDROID / APP-ONE"
+choose 1 "Enable Android"
+send -- "y"
+see "COMPLETED"
+enter
+see "Android: ready"
+choose 3 "Prepare Android host"
+see "PREPARE ANDROID HOST"
+send -- "y"
+see "Fixture administrator password:"
+send -- "fixture-private-password\r"
+see "COMPLETED"
+send -- "Y"
+see "Copied to clipboard"
+if {[string first "fixture-private-password" [read_file "$fixture/clipboard"]] >= 0} { fail "administrator input leaked into copied output" }
+enter
+choose 6 "Open Android viewer"
+see "Fixture viewer launched"
+enter
+see "Viewer: running"
+write_file "$fixture/status-aaaaaaaaaaaa.json" "\{[status_json aaaaaaaaaaaa $port1 ready closed]\}"
+see "Viewer: closed"
+choose 8 "Reset Android data"
+see "Permanently delete Android device data"
+send -- "n"
+see "ANDROID / APP-ONE"
+choose 8 "Reset Android data"
+send -- "y"
+see "COMPLETED"
+enter
+escape
+see "DEVELOPMENT"
+# Changed cleanup inventory returns to a new preview and requires confirmation.
+choose 13 "Preview / clean cache"
+see "123 eligible bytes"
+choose 2 "Clean displayed cache"
+see "123 bytes"
+send -- "n"
+see "CACHE PREVIEW"
+choose 2 "Clean displayed cache"
+write_file "$fixture/cache-stale" ""
+send -- "y"
+see "CACHE CLEANUP"
+see "Fetch a new preview"
+file delete "$fixture/cache-stale"
+send -- "r"
+see "456 eligible bytes"
+choose 2 "Clean displayed cache"
+see "456 bytes"
+send -- "y"
+see "COMPLETED"
+enter
+# Compact/no-color menus scroll, then exit leaves persistent services alone.
+stty rows 14 columns 42 < $spawn_out(slave,name)
+after 200
+send -- "G"
+see "› Remove project"
+escape
+send -- "3"
+see "WORKSPACES"
+send -- "q"
+expect eof
+catch wait result
+if {[lindex $result 3] != 0} { fail "compact terminal exit: $result" }
+launch bbbbbbbbbbbb
+choose 11 "Application URLs"
+choose 0 "Web application"
+choose 2 "Copy actual URL"
+see "Copied to clipboard"
+if {[read_file "$fixture/clipboard"] != "http://127.0.0.1:$port2"} { fail "second repository copied the first repository's mapping" }
+# Reject a malicious non-loopback observation before sending a browser action.
+write_file "$fixture/ports-bbbbbbbbbbbb.json" {[{"id":"web","label":"Web application","service":"dev","container_port":3000,"vm_port":31000,"local_port":32000,"scheme":"http","url":"http://attacker.example:32000","state":"forwarded","reason":""}]}
+choose 1 "Open in browser"
+see "INVALID APPLICATION URLS"
+enter
+see "URL / WEB APPLICATION / APP-TWO"
+escape
+see "APPLICATION URLS / APP-TWO"
+escape
+see "DEVELOPMENT / APP-TWO"
+exit_menu
+set commands [read_file "$fixture/commands"]
+foreach command [list "dev\t@aaaaaaaaaaaa\topen\tweb" "dev\t@aaaaaaaaaaaa\trun\ttest" "dev\t@aaaaaaaaaaaa\trun\tdev" "dev\t@aaaaaaaaaaaa\tshell" "dev\t@aaaaaaaaaaaa\tandroid\tprepare-host" "dev\t@aaaaaaaaaaaa\tandroid\treset\t--yes" "dev\t@aaaaaaaaaaaa\tclean-cache\t--yes\t--revision\t[string repeat b 64]" "dev\t@aaaaaaaaaaaa\tclean-cache\t--yes\t--revision\t[string repeat c 64]"] {
+  if {[string first $command $commands] < 0} { fail "missing exact CLI call: $command" }
+}
+if {[regexp {dev\t@[^\n]+\tstop} $commands] || [string first "dev\t@bbbbbbbbbbbb\topen" $commands] >= 0 || [string first "fixture-private-password" $commands] >= 0} { fail "exit, malicious URL, or auth input triggered an unsafe CLI call" }
+close $socket1
+close $socket2
+puts "development Expect flows: ok"

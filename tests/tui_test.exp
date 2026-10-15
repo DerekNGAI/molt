@@ -1,6 +1,7 @@
 #!/usr/bin/expect -f
 # Real Bubble Tea/CLI; isolated repositories, SSH and tools.
 set timeout 15
+match_max -d 65536
 log_user 0
 if {[info exists env(TUI_TEST_LOG)]} { log_file -a -noappend $env(TUI_TEST_LOG) }
 proc see {text} {
@@ -32,6 +33,7 @@ see "DETAILS"
 escape
 see "COMMANDS"
 escape
+see "WORKSPACES"
 # Scanning stays in Bubble Tea and registers the selected real Git checkout.
 palette 0
 see "REPOSITORIES"
