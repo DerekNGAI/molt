@@ -123,6 +123,21 @@ test('cache requires the displayed revision and excludes Android/database/foreig
   assert.equal(fs.existsSync(stage), true);
   assert.equal(f.run('clean-cache', ['0'.repeat(64)]).status, 1);
 });
+test('status and cache count Nix symlinks without following external or missing targets', t => {
+  const f = fixture(t); const candidate = ok(f.run('candidate'));
+  const stage = path.join(f.root, 'cache', id, 'development', 'staging', candidate.token);
+  const before = ok(f.run('cache')).items.find(item => item.path === stage).bytes;
+  const outside = path.join(f.base, 'outside'); fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'private-data'), Buffer.alloc(1024 * 1024));
+  const links = [path.join(stage, 'nix-result'), path.join(stage, 'missing-result')];
+  fs.symlinkSync(outside, links[0]);
+  fs.symlinkSync('/nix/store/nonexistent-fixture', links[1]);
+  const preview = ok(f.run('cache'));
+  assert.equal(preview.items.find(item => item.path === stage).bytes, before + links.reduce((sum, file) => sum + fs.lstatSync(file).size, 0));
+  assert.equal(ok(f.run('status')).environment.state, 'absent');
+  ok(f.run('clean-cache', [preview.revision]));
+  assert.equal(fs.existsSync(path.join(outside, 'private-data')), true);
+});
 test('foreign markers and redirected owned paths prevent cleanup', t => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.root, '.install-manifest'), 'foreign');

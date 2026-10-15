@@ -346,8 +346,10 @@ function sourceInventory(root, destination, filtered = true) {
   visit(''); return files;
 }
 function bytesAt(name) {
-  safePath(name); if (!fs.existsSync(name)) return 0;
-  const stat = fs.lstatSync(name);
+  safePath(path.dirname(name));
+  let stat; try { stat = fs.lstatSync(name); } catch (e) { if (e.code === 'ENOENT') return 0; throw e; }
+  // Nix outputs contain symlinks; count the link itself without visiting its target.
+  if (stat.isSymbolicLink()) return stat.size;
   if (stat.isDirectory()) return fs.readdirSync(name).reduce((sum, child) => sum + bytesAt(path.join(name, child)), 0);
   checked(stat.isFile(), 'redirected cache content'); return stat.size;
 }

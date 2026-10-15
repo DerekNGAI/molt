@@ -28,6 +28,10 @@ block replacement of its runtime.
 The shipped [menu guideline](../templates/development/GUIDELINE.md) reuses existing
 repository scripts. It lists available setup, development, test, check and build
 actions first, then repository-specific actions. Missing commands are omitted.
+Repositories without runnable actions use an empty action list. Generation prefers
+declared toolchain versions; Node.js repositories without a declared version use
+Node.js 24 when it satisfies their engine constraints. Missing version pins or
+package scripts alone do not block preparation.
 
 ```bash
 molt dev . prepare          # prepare missing configuration and toolchain
