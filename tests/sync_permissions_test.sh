@@ -8,6 +8,8 @@ trap 'if [[ "$real_started" == 1 ]]; then real_mutagen daemon stop >/dev/null 2>
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 export TEST_TMP="$TMP" MOLT_HOME="$TMP/local" TEST_VM="$TMP/vm" TEST_REMOTE_BIN="$TMP/remote-bin"
 mkdir -p "$MOLT_HOME" "$TMP/bin" "$TEST_REMOTE_BIN" "$TEST_VM" "$TMP/repo"
+source "$ROOT/tests/fixtures/development-runtime/source-copy.sh"
+development_test_linux_tools "$TEST_REMOTE_BIN"
 export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen"
 owner=0123456789abcdef0123456789abcdef
 printf 'FORMAT=2\nINSTALL_ID=%s\nROOT=%s\n' "$owner" "$MOLT_HOME" >"$MOLT_HOME/.install-manifest"

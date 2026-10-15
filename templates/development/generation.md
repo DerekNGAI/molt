@@ -1,0 +1,15 @@
+# Generate only missing development configuration
+
+Run using the repository's configured OpenCode model/provider. Inspect manifests, lockfiles, CI workflows, existing devenv definitions/imports, and scripts before proposing commands. Follow the shipped GUIDELINE.md. If a provider or supported native toolchain is unavailable, return a precise blocked reason.
+
+Write candidates only into Molt's owned staging directory. Eligible new repository files are `.molt/development.json`, `devenv.nix`, `devenv.yaml`, `devenv.lock`, and the missing repository menu launcher. Preserve every existing file byte-for-byte. Do not edit source, replace an existing definition, commit, or regenerate on each launch. Exclude credentials, provider settings, private keys, environment secrets, and persistent data from candidates, logs, and container images.
+
+The profile is strict JSON version 1 with only name/actions/ports/android metadata. Actions have IDs matching `^[a-z][a-z0-9-]{0,31}$`, nonempty labels up to 80 characters, kind task or service, 1–64 nonempty argv elements up to 4096 bytes without NUL/CR/LF, and cwd defaulting to `.` inside the repository. At most 32 actions and 16 ports. Names/labels/paths cannot contain control characters. Reject duplicate IDs and duplicate app container ports. Ports reference service actions, use http/https, container ports 1–65535 except 4096, and local preferences 1024–65535. Android.enabled defaults false. Unknown fields, null fields, invalid versions, and escaping paths are errors.
+
+Use declared commands and the existing toolchain version. Do not invent a build/test command or enable Android without an explicit request. Android is an ARM64 Redroid candidate; standard Linux ARM AVD binaries are unsupported. Verify any Flutter/Android native SDK tools for the target architecture before claiming support.
+
+Record existing file identities before generation and compare them again before promotion. Validate the candidate profile using `molt-tui development-tools validate <canonical-staging-repo>/.molt/development.json`. Validation alone does not authorize replacing source files. Reject symlink redirection, unexpected files, concurrent source changes, and failed/cancelled generation or builds; preserve the working runtime.
+
+For an existing devenv definition, build a disposable snapshot with unchanged relative paths and YAML/lock inputs. Keep its definition as `devenv.original.nix` in the same directory, and make the snapshot-only `devenv.nix` import that file and `molt.nix`. Use the build/export procedure in BUILD.md. Keep any added container-input lock and build metadata in the owned snapshot. Never promote the wrapper, adapter, snapshot lock changes, or build outputs into the original repository.
+
+Promote only validated, missing files after identity checks. A prepared revision includes the checked profile, toolchain/lock inputs, template version, architecture, and OpenCode version. Subsequent unchanged launches reuse it and do not invoke AI again.

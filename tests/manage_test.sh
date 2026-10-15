@@ -210,7 +210,28 @@ test_install_repair() (
   [[ -x "$MOLT_HOME/bin/molt-tui" ]] || fail 'native TUI was not installed privately'
   [[ -x "$MOLT_HOME/current/install.sh" && -f "$MOLT_HOME/current/config.example" ]] || fail 'installation cannot repair itself'
   [[ -x "$MOLT_HOME/MOLT.command" ]] || fail 'missing Finder launcher'
+  [[ -f "$MOLT_HOME/current/development-tools.lock.json" && -f "$MOLT_HOME/current/templates/development/molt.nix" && -f "$MOLT_HOME/current/.molt-release" ]] || fail 'development foundation assets or release ownership marker were not packaged'
   /bin/bash "$MOLT_HOME/current/install.sh" --non-interactive >"$TMP/repair.log" 2>&1 || { cat "$TMP/repair.log" >&2; fail 'installation could not repair itself from its owned release'; }
+)
+
+test_development_tools_preserved() (
+  install development-tools
+  local original="$(cd "$MOLT_HOME/current" && pwd -P)"
+  local bundle="darwin-arm64-4.1-$(printf '%064d' 0)"
+  mkdir -p "$MOLT_HOME/tools/development/$bundle/viewer"
+  printf 'working viewer\n' >"$MOLT_HOME/tools/development/$bundle/viewer/scrcpy"
+  chmod 700 "$MOLT_HOME/tools/development/$bundle/viewer/scrcpy"
+  /bin/bash "$ROOT/install.sh" --non-interactive >"$TMP/development-upgrade.log" 2>&1 || { cat "$TMP/development-upgrade.log" >&2; fail 'development tools blocked upgrade'; }
+  [[ "$(<"$MOLT_HOME/tools/development/$bundle/viewer/scrcpy")" == 'working viewer' ]] || fail 'upgrade lost acquired development tools'
+  [[ -x "$original/tools/development/$bundle/viewer/scrcpy" && -f "$original/.molt-release" ]] || fail 'upgrade erased a live old-release helper or its ownership marker'
+  /bin/bash "$MOLT_HOME/current/install.sh" --non-interactive >"$TMP/development-repair.log" 2>&1 || fail 'repair lost development tools'
+  [[ "$(<"$MOLT_HOME/tools/development/$bundle/viewer/scrcpy")" == 'working viewer' ]] || fail 'repair discarded acquired development tools'
+  local outside="$TMP/development-outside"
+  mkdir -p "$outside"
+  ln -s "$outside" "$MOLT_HOME/tools/development/$bundle/redirect"
+  local current="$(readlink "$MOLT_HOME/current")"
+  if /bin/bash "$ROOT/install.sh" --non-interactive >"$TMP/development-redirect.log" 2>&1; then fail 'upgrade copied a redirected development bundle'; fi
+  [[ "$(readlink "$MOLT_HOME/current")" == "$current" && -z "$(ls -A "$outside")" ]] || fail 'failed upgrade changed the release or wrote through a redirect'
 )
 
 test_native_install() (
@@ -230,7 +251,7 @@ prepare_update() {
   install 'update with spaces'
   export UPDATE_SOURCE="$TMP/update-source" UPDATE_RECORD="$TMP/update-source-path" UPDATE_STARTED="$TMP/update-started"
   mkdir -p "$UPDATE_SOURCE"
-  cp -R "$ROOT/bin" "$ROOT/shims" "$ROOT/remote" "$ROOT/tui" "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/config.example" "$ROOT/tools.lock" "$UPDATE_SOURCE/"
+  cp -R "$ROOT/bin" "$ROOT/shims" "$ROOT/remote" "$ROOT/tui" "$ROOT/templates" "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/config.example" "$ROOT/tools.lock" "$ROOT/development-tools.lock.json" "$UPDATE_SOURCE/"
   printf '#!/usr/bin/env bash\nprintf "stale TUI fixture\\n"\n' >"$UPDATE_SOURCE/bin/molt-tui"
   chmod +x "$UPDATE_SOURCE/bin/molt-tui"
   cat >"$TMP/bin/git" <<'GIT'
@@ -409,7 +430,7 @@ test_ssh_paths() (
   [[ "$output" == *"$expected"* ]] || fail 'SSH interpreted spaces/percent tokens instead of the contained known-hosts path'
 )
 
-for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_install_repair test_native_install test_install_options test_source_install_rebuilds_tui test_update test_update_failures test_update_cancellation test_action_capture test_ssh_paths}; do
+for test in ${*:-test_config test_empty_connection test_connections test_connection_aliases test_shell_integration test_shell_edits test_failed_shell_activation test_project_management test_install_repair test_development_tools_preserved test_native_install test_install_options test_source_install_rebuilds_tui test_update test_update_failures test_update_cancellation test_action_capture test_ssh_paths}; do
   "$test"
   printf 'PASS: %s\n' "$test"
 done

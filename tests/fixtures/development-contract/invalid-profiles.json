@@ -1,0 +1,7 @@
+[
+  {"version":2,"name":"Bad version"},
+  {"version":1,"name":"Bad ID","actions":[{"id":"../bad","label":"Test","kind":"task","argv":["node"]}]},
+  {"version":1,"name":"Bad argv","actions":[{"id":"test","label":"Test","kind":"task","argv":[]}]},
+  {"version":1,"name":"Bad cwd","actions":[{"id":"test","label":"Test","kind":"task","argv":["node"],"cwd":".."}]},
+  {"version":1,"name":"Bad port","actions":[{"id":"dev","label":"Dev","kind":"service","argv":["node"]}],"ports":[{"id":"web","label":"Web","service":"dev","container_port":4096,"local_port":3000,"scheme":"http"}]}
+]

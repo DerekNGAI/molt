@@ -1,0 +1,12 @@
+{
+  "name": "molt-development-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=24"},
+  "scripts": {
+    "dev": "node server.mjs",
+    "test": "node --test",
+    "check": "node --check server.mjs"
+  }
+}

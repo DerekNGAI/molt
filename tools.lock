@@ -9,3 +9,6 @@ bbdb3f00c2c51e42e315525233151309724226a8776da8e9145e3b0fa3d5310f opencode-linux-
 24b0d458d21ef548b2752166303defcf7f4945b049fb4876ab78dfaf86d81b27 opencode-linux-x64-baseline.tar.gz
 724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5 node-v24.21.0-linux-arm64.tar.gz
 6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff node-v24.21.0-linux-x64.tar.gz
+# scrcpy v4.1 official release asset digests; both Mac bundles include private ADB.
+20fd47c9014dd5e0fa77091f3cb7adbda8445a360c4584aeaa0150b5b3988ff3 scrcpy-macos-aarch64-v4.1.tar.gz
+ee2a7223bc8dbdc4f482db1134bcf441178dafb833492b71ca4c22090c58ce72 scrcpy-macos-x86_64-v4.1.tar.gz

@@ -122,6 +122,37 @@ if [[ -d "$SRC/tui" ]]; then cp -R "$SRC/tui" "$STAGE/tui"; fi
 cp "$SRC/uninstall.sh" "$STAGE/bin/molt-uninstall"
 cp "$SRC/install.sh" "$SRC/uninstall.sh" "$SRC/config.example" "$STAGE/"
 cp "$SRC/tools.lock" "$STAGE/tools.lock"
+cp "$SRC/development-tools.lock.json" "$STAGE/development-tools.lock.json"
+cp -R "$SRC/templates" "$STAGE/templates"
+# Copy only published bundles; an acquisition still in progress belongs to its old release.
+if [[ -e "$MOLT_HOME/tools/development" || -L "$MOLT_HOME/tools/development" ]]; then
+  [[ "$LEGACY" == 0 && -L "$MOLT_HOME/tools" && "$(readlink "$MOLT_HOME/tools")" == current/tools ]] || {
+    molt_error 'development tools require the owned release alias'; exit 1;
+  }
+  previous_release="$(molt_canonical "$MOLT_HOME/current")" || exit 1
+  case "$previous_release" in "$MOLT_HOME/releases/install."*) ;; *) molt_error 'unexpected development tools release'; exit 1 ;; esac
+  marker="$previous_release/.molt-release"
+  [[ ! -L "$marker" && "$(molt_value "$marker" FORMAT)" == 2 &&
+     "$(molt_value "$marker" ROOT)" == "$MOLT_HOME" &&
+     "$(molt_value "$marker" INSTALL_ID)" == "$MOLT_INSTALL_ID" &&
+     "$(molt_value "$marker" STATUS)" == ready ]] || {
+    molt_error 'development tools release ownership mismatch'; exit 1;
+  }
+  development="$previous_release/tools/development"
+  [[ -d "$development" && "$(molt_canonical "$MOLT_HOME/tools/development")" == "$development" ]] || {
+    molt_error 'redirected development tools directory'; exit 1;
+  }
+  unsafe="$(find "$development" \( ! -user "$(id -u)" -o -perm -0020 -o -perm -0002 -o \( ! -type d -a ! -type f \) \) -print)" || exit 1
+  [[ -z "$unsafe" ]] || { molt_error 'unsafe development tools bundle'; exit 1; }
+  mkdir -p "$STAGE/tools/development"
+  for bundle in "$development"/darwin-*; do
+    [[ -e "$bundle" ]] || continue
+    [[ -d "$bundle" && "${bundle##*/}" =~ ^darwin-(arm64|amd64)-[a-zA-Z0-9._-]+-[a-f0-9]{64}$ ]] || {
+      molt_error 'unrecognized development tools bundle'; exit 1;
+    }
+    cp -Rp "$bundle" "$STAGE/tools/development/"
+  done
+fi
 chmod +x "$STAGE/bin/"* "$STAGE/shims/"*
 # Rebuild sources when Go is available; Git checkouts must not reuse stale binaries.
 # Packaged executables and explicit overrides can install without Go.
@@ -194,6 +225,7 @@ MUTAGEN_BINARY=$MUTAGEN_BINARY
 OPENCODE_BINARY=$OPENCODE_BINARY
 OPENCODE_MANAGED=$OPENCODE_MANAGED
 EOF
+cp "$STAGE/manifest" "$STAGE/.molt-release"
 # Activation derives its own path, including custom paths with spaces or quotes.
 cat >"$STAGE/activate.zsh" <<'ACTIVATE'
 export MOLT_HOME="${${(%):-%x}:A:h}"

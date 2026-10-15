@@ -8,7 +8,10 @@ cleanup() {
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+source "$ROOT/tests/fixtures/development-runtime/source-copy.sh"
+development_test_source_copy
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/vm" "$TMP/repo"
+development_test_linux_tools "$TMP/bin"
 GO_BIN="$(command -v go)"
 "$GO_BIN" -C "$ROOT/tui" build -trimpath -o "$TMP/molt-tui" .
 unset MOLT_SSH_CONFIG MOLT_USER_HOME OPENCODE_CONFIG_DIR

@@ -5,12 +5,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-tui.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/home" "$TMP/bin" "$TMP/repos/app" "$TMP/repos/service"
+mkdir -p "$TMP/home" "$TMP/bin" "$TMP/repos/app" "$TMP/repos/service" "$TMP/source/tests"
+# Keep the fixture installation beside its source, including with an in-tree TMPDIR.
+cp -R "$ROOT/bin" "$ROOT/shims" "$ROOT/remote" "$ROOT/tui" "$ROOT/templates" "$ROOT/development-tools.lock.json" "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/config.example" "$ROOT/tools.lock" "$TMP/source/"
+cp "$ROOT/tests/terminal_check.sh" "$TMP/source/tests/"
 GO_BIN="$(command -v go)"
 EXPECT_BIN="$(command -v expect)"
 "$GO_BIN" -C "$ROOT/tui" build -trimpath -o "$TMP/molt-tui" .
 unset MOLT_SSH_CONFIG MOLT_USER_HOME OPENCODE_CONFIG_DIR
 export HOME="$TMP/home" ZDOTDIR="$TMP/home" MOLT_HOME="$TMP/home/.molt" TERM=xterm-256color
+export GIT_CEILING_DIRECTORIES="$TMP"
 export MOLT_TUI_BINARY="$TMP/molt-tui"
 export MOLT_MUTAGEN_BINARY="$TMP/bin/mutagen" MOLT_OPENCODE_BINARY="$TMP/bin/opencode"
 for tool in mutagen opencode; do
@@ -42,7 +46,7 @@ exit 0
 SSH
 chmod +x "$TMP/bin/"*
 export PATH="$TMP/bin:/usr/bin:/bin"
-/bin/bash "$ROOT/install.sh" --non-interactive >/dev/null
+/bin/bash "$TMP/source/install.sh" --non-interactive >/dev/null
 git -C "$TMP/repos/app" init -q
 git -C "$TMP/repos/service" init -q
 "$MOLT_HOME/bin/molt" config set MOLT_ROOT "$TMP/repos"
@@ -52,9 +56,9 @@ git -C "$TMP/repos/service" init -q
 mkdir -p "$HOME/.ssh"
 printf 'Include "%s/aliases.conf"\n' "$TMP" >"$HOME/.ssh/config"
 printf 'Host unreachable-vm\n  HostName vm.example\n  User ubuntu\nHost alternate-vm\n  HostName alternate.example\n  User developer\n  Port 2222\n' >"$TMP/aliases.conf"
-export TUI_ROOT="$ROOT" TUI_TMP="$TMP"
+export TUI_ROOT="$TMP/source" TUI_TMP="$TMP"
 mkdir -p "$TMP/update-source"
-cp -R "$ROOT/bin" "$ROOT/shims" "$ROOT/remote" "$ROOT/tui" "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/config.example" "$ROOT/tools.lock" "$TMP/update-source/"
+cp -R "$ROOT/bin" "$ROOT/shims" "$ROOT/remote" "$ROOT/tui" "$ROOT/templates" "$ROOT/development-tools.lock.json" "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/config.example" "$ROOT/tools.lock" "$TMP/update-source/"
 rm -f "$TMP/update-source/bin/molt-tui"
 cat >"$TMP/bin/git" <<'GIT'
 #!/usr/bin/env bash

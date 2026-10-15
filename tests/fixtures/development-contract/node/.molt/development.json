@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "Node fixture",
+  "actions": [
+    {"id":"setup","label":"Install dependencies","kind":"task","argv":["npm","ci"],"cwd":"."},
+    {"id":"dev","label":"Development server","kind":"service","argv":["npm","run","dev"],"cwd":"."},
+    {"id":"test","label":"Run tests","kind":"task","argv":["npm","test"],"cwd":"."},
+    {"id":"check","label":"Check syntax","kind":"task","argv":["npm","run","check"],"cwd":"."}
+  ],
+  "ports": [{"id":"web","label":"Web application","service":"dev","container_port":3000,"local_port":3000,"scheme":"http"}],
+  "android": {"enabled":false}
+}

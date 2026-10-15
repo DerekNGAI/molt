@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-offline.XXXXXX")"
 trap 'rm -rf -- "$TMP"' EXIT
 mkdir -p "$TMP/tools" "$TMP/user" "$TMP/vm"
+source "$ROOT/tests/fixtures/development-runtime/source-copy.sh"
+development_test_linux_tools "$TMP/tools"
 export HOME="$TMP/user" MOLT_USER_HOME="$TMP/user" PATH="$TMP/tools:$PATH"
 export TEST_SSH_LOG="$TMP/ssh.log" TEST_SYNC_LOG="$TMP/sync.log" TEST_VM_HOME="$TMP/vm"
 unset MOLT_SSH_CONFIG OPENCODE_CONFIG_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME

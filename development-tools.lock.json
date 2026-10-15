@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "artifacts": [
+    {"role":"builder","os":"linux","arch":"arm64","version":"2.32.4","url":"","sha256":"","image":"nixos/nix:2.32.4","digest":"sha256:5c245b5fe1daf06a32ae9ad027741e7e63e523582cb4d3e55c8073a641bcb7fb"},
+    {"role":"builder","os":"linux","arch":"amd64","version":"2.32.4","url":"","sha256":"","image":"nixos/nix:2.32.4","digest":"sha256:59627baee1756479291d429a94fb60d2d4552d32ca61bcd70b853e476f9eb90e"},
+    {"role":"android","os":"linux","arch":"arm64","version":"14.0.0_64only-240527","url":"","sha256":"","image":"redroid/redroid:14.0.0_64only-240527","digest":"sha256:46478a567194aed24cd0877d4434a9e58b534d4aad30931eb21999a52f2ce131"},
+    {"role":"viewer","os":"darwin","arch":"arm64","version":"4.1","url":"https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-macos-aarch64-v4.1.tar.gz","sha256":"20fd47c9014dd5e0fa77091f3cb7adbda8445a360c4584aeaa0150b5b3988ff3","image":"","digest":""},
+    {"role":"viewer","os":"darwin","arch":"amd64","version":"4.1","url":"https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-macos-x86_64-v4.1.tar.gz","sha256":"ee2a7223bc8dbdc4f482db1134bcf441178dafb833492b71ca4c22090c58ce72","image":"","digest":""},
+    {"role":"adb","os":"darwin","arch":"arm64","version":"4.1","url":"https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-macos-aarch64-v4.1.tar.gz","sha256":"20fd47c9014dd5e0fa77091f3cb7adbda8445a360c4584aeaa0150b5b3988ff3","image":"","digest":""},
+    {"role":"adb","os":"darwin","arch":"amd64","version":"4.1","url":"https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-macos-x86_64-v4.1.tar.gz","sha256":"ee2a7223bc8dbdc4f482db1134bcf441178dafb833492b71ca4c22090c58ce72","image":"","digest":""}
+  ]
+}

@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/molt-lifecycle.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'chmod -R u+rwX "$TMP"; rm -rf "$TMP"' EXIT
+source "$ROOT/tests/fixtures/development-runtime/source-copy.sh"
+development_test_source_copy
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/zsh"
 unset MOLT_SSH_CONFIG MOLT_USER_HOME OPENCODE_CONFIG_DIR
 export HOME="$TMP/home" ZDOTDIR="$TMP/zsh" PATH="$TMP/bin:/usr/bin:/bin"
@@ -98,7 +100,7 @@ test_contained_install() (
   cmp -s "$TMP/original.zshrc" "$ZDOTDIR/.zshrc" || fail 'installation changed .zshrc'
   [[ -x "$MOLT_HOME/bin/molt-uninstall" && -f "$MOLT_HOME/activate.zsh" ]] || fail 'missing installation files'
   for shim in "$MOLT_HOME/shims/"*; do
-    [[ "${shim##*/}" == opencode ]] || fail "installed development command shim: $shim"
+    [[ "${shim##*/}" == opencode || "${shim##*/}" == menu ]] || fail "installed unexpected command shim: $shim"
   done
   contains 'FORMAT=2' "$MOLT_HOME/.install-manifest"
   printf 'keep password\n' >"$MOLT_HOME/opencode.password"
