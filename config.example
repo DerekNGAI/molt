@@ -13,3 +13,9 @@ MOLT_OPENCODE_PASSWORD_FILE="${MOLT_OPENCODE_PASSWORD_FILE:-$MOLT_HOME/opencode.
 
 # Set to 0 for an instant, static terminal interface.
 MOLT_ANIMATIONS=1
+
+# Development is configured per repository in .molt/development.json and devenv files.
+# Choose Development menu → Prepare, or run `molt dev <repo> prepare` explicitly.
+# Ordinary registration/OpenCode startup never generates a profile.
+# App URLs use actual allocated loopback ports; do not infer them from the base above.
+# Android is opt-in per repository. See docs/development.md for host/viewer requirements.

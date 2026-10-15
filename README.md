@@ -80,7 +80,7 @@ Stopping or restarting the project interrupts its active work. Changing shared
 configuration or credentials can still reload the server and interrupt work and
 attached clients.
 
-Only the `opencode` command is intercepted. Commands such as `npm`, `python`,
+The `opencode` and `menu` commands route to registered workspaces. Commands such as `npm`, `python`,
 `cargo`, and `git` use your ordinary local tools. Outside registered repositories,
 `opencode` runs locally with your normal configuration, accounts, and session
 history. Clients attached to a VM also retain your saved model variants and UI
@@ -88,6 +88,29 @@ preferences.
 Use `MOLT_LOCAL=1 opencode` to run locally inside a registered repository.
 OpenCode's explicit `attach`, `serve`, `web`, help, and
 version commands retain their normal client behavior.
+
+## Repository development
+
+Choose **Development menu** for a project, press **D** on its dashboard, or run
+`menu` inside a registered repository. Choose **Prepare** to generate missing
+development configuration and build its remote toolchain; ordinary registration
+and OpenCode startup do not require a development profile or AI provider.
+
+```bash
+molt dev . prepare
+molt dev . start
+molt dev . ports --json
+molt dev . run test
+molt dev . stop
+```
+
+The menu includes declared repository tasks, persistent services, actual localhost
+application URLs, Android controls, and cache management. Services survive closing
+the menu. Existing devenv definitions are preserved, and unchanged preparation
+reuses its environment. `MOLT_LOCAL=1 menu` uses your existing local menu command.
+
+See [the development guide](docs/development.md) for profiles, generation,
+port collisions, per-repository Android, private viewing, and removal/retry behavior.
 
 OpenCode provider commands also work inside a registered repository:
 
