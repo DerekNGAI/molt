@@ -3,6 +3,7 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
 const root = process.env.MOLT_FIXTURE_ROOT, owner = process.env.MOLT_FIXTURE_OWNER, project = process.env.MOLT_FIXTURE_PROJECT;
 const file = path.join(root, 'docker-fixture.json');
 let state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : { images: {}, containers: {} };
@@ -25,12 +26,43 @@ if (args[0] === 'inspect' || args[0] === 'image' && args[1] === 'inspect') {
 if (args.includes('ls') || args[0] === 'ps') { console.log(Object.keys(args[0] === 'image' ? state.images : state.containers).join('\n')); process.exit(0); }
 if (args[0] === 'exec') {
   if (args.includes('/opt/opencode/opencode') && args.includes('run')) {
-    if (process.env.MOLT_FIXTURE_AI_FAIL === '1') process.exit(1);
-    const directory = option('--workdir').replace('/molt-cache', path.join(root, 'cache', project));
+    if (process.env.MOLT_FIXTURE_AI_FAIL === '1') { console.error('synthetic provider secret'); process.exit(1); }
+    if (process.env.MOLT_FIXTURE_AI_SIGNAL === '1') process.kill(process.pid, 'SIGTERM');
+    if (process.env.MOLT_FIXTURE_AI_EMPTY === '1') process.exit(0);
+    const containerDirectory = option('--workdir');
+    const directory = containerDirectory.replace('/molt-cache', path.join(root, 'cache', project));
+    const config = JSON.parse(args.find(arg => arg.startsWith('OPENCODE_CONFIG_CONTENT=')).slice('OPENCODE_CONFIG_CONTENT='.length));
+    // OpenCode 1.19 checks read/edit paths relative to '/' for these snapshots without .git.
+    function allowed(permission, tool, resource) {
+      const rules = permission[tool] ?? permission['*'];
+      if (typeof rules === 'string') return rules === 'allow';
+      let action = permission['*'];
+      for (const [pattern, value] of Object.entries(rules)) {
+        const regex = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/gu, '\\$&').replace(/\*/gu, '.*').replace(/\?/gu, '.')}$`, 'su');
+        if (regex.test(resource)) action = value;
+      }
+      return action === 'allow';
+    }
+    for (const permission of [config.permission, config.agent.build.permission]) {
+      for (const name of ['', 'package.json', 'source.js', '.github/workflows/check.yml']) {
+        assert.equal(allowed(permission, 'read', path.posix.relative('/', path.posix.join(containerDirectory, name))), true, `read denied: ${name || 'staging directory'}`);
+      }
+      for (const name of ['.molt/development.json', 'devenv.nix', 'devenv.yaml', 'devenv.lock', 'menu']) {
+        assert.equal(allowed(permission, 'edit', path.posix.relative('/', `${containerDirectory}/${name}`)), !fs.existsSync(path.join(directory, name)), `incorrect edit permission: ${name}`);
+      }
+      for (const name of ['/workspace/source.js', '/molt-cache/data/opencode/auth.json', '/molt-config/opencode/opencode.json', `${containerDirectory}-other/package.json`]) {
+        for (const tool of ['read', 'edit']) assert.equal(allowed(permission, tool, path.posix.relative('/', name)), false, `${tool} allowed outside staging: ${name}`);
+      }
+      assert.equal(allowed(permission, 'edit', path.posix.relative('/', `${containerDirectory}/source.js`)), false);
+      for (const tool of ['bash', 'task', 'external_directory', 'question']) assert.equal(allowed(permission, tool, '*'), false, `${tool} allowed`);
+    }
     fs.mkdirSync(path.join(directory, '.molt'), { recursive: true });
-    fs.writeFileSync(path.join(directory, '.molt/development.json'), JSON.stringify({ version: 1, name: 'Generated', actions: [], ports: [], android: { enabled: false } }));
-    fs.writeFileSync(path.join(directory, 'devenv.nix'), '{ pkgs, ... }: { packages = [ pkgs.nodejs_24 ]; }');
-    fs.writeFileSync(path.join(directory, 'devenv.yaml'), 'inputs:\n  nixpkgs:\n    url: github:cachix/devenv-nixpkgs/256551e45f6303e142ab4a98be1bf243feb77dc0\n');
+    const generated = {
+      '.molt/development.json': JSON.stringify({ version: 1, name: 'Generated', actions: [], ports: [], android: { enabled: false } }),
+      'devenv.nix': '{ pkgs, ... }: { packages = [ pkgs.nodejs_24 ]; }',
+      'devenv.yaml': 'inputs:\n  nixpkgs:\n    url: github:cachix/devenv-nixpkgs/256551e45f6303e142ab4a98be1bf243feb77dc0\n',
+    };
+    for (const [name, contents] of Object.entries(generated)) if (!fs.existsSync(path.join(directory, name))) fs.writeFileSync(path.join(directory, name), contents);
     if (process.env.MOLT_FIXTURE_AI_EDIT === '1') fs.writeFileSync(path.join(directory, 'source.js'), 'AI changed existing source');
   } else if (args.includes('status')) console.log('[]');
   else if (args.includes('activity')) console.log('{"busy":false}');

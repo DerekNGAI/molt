@@ -46,6 +46,44 @@ test('missing configuration with no provider is blocked without modifying source
   const result = f.run('candidate'); assert.equal(result.status, 1); assert.match(result.stderr, /provider/i);
   assert.equal(fs.existsSync(path.join(f.source, 'devenv.nix')), false);
 });
+test('generation can read staging and write only missing configuration with relative permission paths', t => {
+  const f = fixture(t, true);
+  fs.writeFileSync(path.join(f.root, 'auth/auth.json'), '{"fixture":{"type":"api","key":"synthetic"}}');
+  const candidate = ok(f.run('candidate'));
+  assert.equal(candidate.profile.name, 'Generated');
+  assert.equal(fs.existsSync(path.join(f.source, '.molt/development.json')), false);
+});
+test('generation keeps existing definitions read-only when another definition is missing', t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.root, 'auth/auth.json'), '{"fixture":{"type":"api","key":"synthetic"}}');
+  fs.unlinkSync(path.join(f.source, 'devenv.yaml'));
+  const candidate = ok(f.run('candidate'));
+  assert.deepEqual(candidate.profile, spec);
+  const snapshot = path.join(f.root, 'cache', id, 'development', 'staging', candidate.token, 'repo');
+  assert.deepEqual(fs.readFileSync(path.join(snapshot, 'devenv.nix')), fs.readFileSync(path.join(f.source, 'devenv.nix')));
+});
+test('generation reports missing required files when the model exits without creating them', t => {
+  const f = fixture(t, true);
+  fs.writeFileSync(path.join(f.root, 'auth/auth.json'), '{"fixture":{"type":"api","key":"synthetic"}}');
+  const result = f.run('candidate', [], '', { MOLT_FIXTURE_AI_EMPTY: '1' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /missing required files: \.molt\/development\.json, devenv\.nix, devenv\.yaml/);
+  assert.match(result.stderr, /source and working runtime preserved/);
+  const ledger = JSON.parse(fs.readFileSync(path.join(f.root, 'state/development', id, 'resources.json')));
+  assert.equal(Object.values(ledger.stages)[0].state, 'failed');
+  assert.equal(fs.existsSync(path.join(f.source, '.molt/development.json')), false);
+});
+test('generation reports process failures without exposing provider output', t => {
+  const f = fixture(t, true);
+  fs.writeFileSync(path.join(f.root, 'auth/auth.json'), '{"fixture":{"type":"api","key":"synthetic"}}');
+  for (const [env, reason] of [['MOLT_FIXTURE_AI_FAIL', /exited with code 1/], ['MOLT_FIXTURE_AI_SIGNAL', /terminated by SIGTERM/]]) {
+    const result = f.run('candidate', [], '', { [env]: '1' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, reason);
+    assert.match(result.stderr, /source and working runtime preserved/);
+    assert.doesNotMatch(result.stdout + result.stderr, /synthetic provider secret/);
+  }
+});
 test('existing definitions are preserved and unchanged prepare reuses the revision', t => {
   const f = fixture(t); const before = fs.readFileSync(path.join(f.source, 'devenv.nix'));
   const candidate = ok(f.run('candidate'));

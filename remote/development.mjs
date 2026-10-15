@@ -495,22 +495,30 @@ async function control(args) {
     try {
       if (requiresAI) {
         const containerDirectory = `/molt-cache/development/staging/${token}/repo`;
-        const permissions = { '*': 'deny', read: { '*': 'deny', [`${containerDirectory}/**`]: 'allow' }, edit: { '*': 'deny' }, glob: 'allow', grep: 'allow', list: 'allow', bash: 'deny', task: 'deny', external_directory: 'deny', question: 'deny' };
-        for (const name of missing) permissions.edit[`${containerDirectory}/${name}`] = 'allow';
-        const prompt = `${fs.readFileSync(path.join(meta, 'templates', 'generation.md'), 'utf8')}\n${fs.readFileSync(path.join(meta, 'templates', 'GUIDELINE.md'), 'utf8')}\nThe ONLY eligible files are: ${missing.join(', ')}. Existing files must stay byte-identical. Write in this staging repository.`;
+        // Snapshots exclude .git, so OpenCode checks read/edit paths relative to its '/' worktree.
+        const permissionDirectory = path.posix.relative('/', containerDirectory);
+        const permissions = { '*': 'deny', read: { '*': 'deny', [permissionDirectory]: 'allow', [`${permissionDirectory}/**`]: 'allow' }, edit: { '*': 'deny' }, glob: 'allow', grep: 'allow', list: 'allow', bash: 'deny', task: 'deny', external_directory: 'deny', question: 'deny' };
+        for (const name of missing) permissions.edit[`${permissionDirectory}/${name}`] = 'allow';
+        const prompt = `${fs.readFileSync(path.join(meta, 'templates', 'generation.md'), 'utf8')}\n${fs.readFileSync(path.join(meta, 'templates', 'GUIDELINE.md'), 'utf8')}\nThe target VM architecture is ${architecture}. The ONLY eligible files are: ${missing.join(', ')}. Existing files must stay byte-identical. Write in this staging repository.`;
         // No shell execution, real source mount, provider contents or output log in the AI boundary.
-        execFileSync('docker', ['exec', '--workdir', containerDirectory, '--env', 'OPENCODE_DISABLE_PROJECT_CONFIG=1', '--env', `OPENCODE_CONFIG_CONTENT=${JSON.stringify({ permission: permissions, agent: { build: { permission: permissions } } })}`, workspace, '/opt/opencode/opencode', 'run', '--agent', 'build', prompt], { timeout: 300000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'ignore', 'ignore'] });
+        try {
+          execFileSync('docker', ['exec', '--workdir', containerDirectory, '--env', 'OPENCODE_DISABLE_PROJECT_CONFIG=1', '--env', `OPENCODE_CONFIG_CONTENT=${JSON.stringify({ permission: permissions, agent: { build: { permission: permissions } } })}`, workspace, '/opt/opencode/opencode', 'run', '--agent', 'build', prompt], { timeout: 300000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'ignore', 'ignore'] });
+        } catch (e) {
+          const reason = e.code === 'ETIMEDOUT' ? 'timed out after 5 minutes' : Number.isInteger(e.status) ? `exited with code ${e.status}` : e.signal ? `terminated by ${e.signal}` : 'could not start';
+          throw error(`configuration generator ${reason}`);
+        }
       }
       if (missing.includes('menu') && !fs.existsSync(path.join(snapshot, 'menu'))) fs.copyFileSync(path.join(meta, 'templates', 'menu.mjs'), path.join(snapshot, 'menu'));
       const after = sourceInventory(snapshot, undefined, false);
       for (const before of files) checked(after.some(file => file.path === before.path && file.digest === before.digest && file.mode === before.mode), 'generation changed an existing file; candidate retained');
       for (const added of after.filter(file => !files.some(before => before.path === file.path))) checked(missing.includes(added.path), 'generation added an unexpected file; candidate retained');
+      const required = ['.molt/development.json', 'devenv.nix', 'devenv.yaml'].filter(name => !fs.existsSync(path.join(snapshot, name)));
+      checked(required.length === 0, `configuration generation missing required files: ${required.join(', ')}`);
       const spec = profileAt(path.join(snapshot, '.molt/development.json'), snapshot);
-      checked(fs.existsSync(path.join(snapshot, 'devenv.nix')) && fs.existsSync(path.join(snapshot, 'devenv.yaml')), 'missing generated devenv definition');
       checked(!spec.android.enabled || existingProfile?.android.enabled, 'generation cannot enable Android');
       const stage = ledger.stages[token]; stage.state = 'candidate'; stage.candidate = after; stage.profile = spec;
       stage.revision = revisionFor(after, spec, object); writeJSON(ledgerPath, ledger); json({ token, profile: spec, revision: stage.revision, reused: false });
-    } catch (e) { ledger.stages[token].state = 'failed'; writeJSON(ledgerPath, ledger); throw error(e.exitCode === 2 ? e.message : 'configuration generation failed; source and working runtime preserved', e.exitCode ?? 1); }
+    } catch (e) { ledger.stages[token].state = 'failed'; writeJSON(ledgerPath, ledger); throw error(e.exitCode === 2 ? e.message : `${e.exitCode ? e.message : 'configuration generation failed'}; source and working runtime preserved`, e.exitCode ?? 1); }
   }
   async function build() {
     const stage = stageFor(argument); checked(stage.state === 'candidate', 'candidate not ready for build');
